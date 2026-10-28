@@ -172,3 +172,20 @@ def test_live_duration_zero_returns(tmp_path):
     s = LiveMonitor(raw, setup=LAB, when=WHEN).run(interval_s=0, duration_s=0,
                                                     log=lambda m: None)
     assert s["hits_total"] == 20
+
+
+def test_live_follows_newest_subrun(tmp_path):
+    runs = tmp_path / "runs"
+    a = runs / "run_1" / "sub_00" / "raw_daq_data"
+    a.mkdir(parents=True)
+    _capture(a / _name(1), 10)
+    lm = LiveMonitor(runs, setup=LAB, when=WHEN, window_s=3600, follow_newest=True)
+    s = lm.step()
+    assert (s["run"], s["subrun"], s["hits_total"]) == ("run_1", "sub_00", 40)
+    time.sleep(0.02)
+    b = runs / "run_2" / "sub_00" / "raw_daq_data"
+    b.mkdir(parents=True)
+    _capture(b / _name(1), 5, vmm=3)
+    s = lm.step()
+    assert (s["run"], s["captures_finished"], s["hits_total"]) == ("run_2", [_name(1)], 60)
+    assert lm.out == runs / "live.json"

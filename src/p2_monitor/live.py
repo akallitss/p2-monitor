@@ -24,6 +24,10 @@ It is a sampling monitor, built not to add load when the DAQ is under stress:
 None of the defaults assume a data rate: they bound work and memory per poll.
 `data_age_s` says how long ago (wall clock) the newest packet arrived, which
 shows a stalled DAQ at a glance.
+
+With follow_newest, raw_dir is a runs directory (runs/<run>/<subrun>/raw_daq_data)
+and the monitor moves by itself to the newest sub-run's captures, finishing
+the previous file first: one long-lived process for a whole session.
 """
 
 import json
@@ -38,7 +42,7 @@ from p2_decode import StreamDecoder
 
 from .counts import chip_occupancy
 from .rates import channel_rates, summarize
-from .watch import captures
+from .watch import captures, raw_dirs
 
 MB = 1024 * 1024
 MAX_BUCKETS = 60
@@ -70,13 +74,17 @@ class LiveMonitor:
 
     def __init__(self, raw_dir, setup=None, when=None, mapping=True, window_s=60.0,
                  data_format="SRS", out=None, plot_dir=None, plot_every_s=0,
-                 max_read_mb=16, max_behind_mb=64, rss_limit_mb=None):
-        self.raw_dir = Path(raw_dir)
+                 max_read_mb=16, max_behind_mb=64, rss_limit_mb=None,
+                 follow_newest=False, raw_inner="raw_daq_data"):
+        self.root = Path(raw_dir)
+        self.follow_newest, self.raw_inner = follow_newest, raw_inner
+        self.raw_dir = self.root
         self.setup, self.when, self.use_mapping = setup, when, mapping
         self.window_s = float(window_s)
         self.bucket_s = None if self.window_s == float("inf") else self.window_s / MAX_BUCKETS
         self.data_format = data_format
-        self.out = Path(out) if out else self.raw_dir.parent / "live.json"
+        self.out = Path(out) if out else (self.root / "live.json" if follow_newest
+                                          else self.raw_dir.parent / "live.json")
         self.plot_dir, self.plot_every_s = plot_dir, plot_every_s
         self.max_read = int(max_read_mb * MB)
         self.max_behind = int(max_behind_mb * MB)
@@ -94,7 +102,31 @@ class LiveMonitor:
 
     # -- following ------------------------------------------------------------
 
+    def _newest_raw_dir(self):
+        """The sub-run raw directory holding the most recently written capture.
+
+        Looks only inside the most recently modified run, so the cost does not
+        grow with the number of runs on disk.
+        """
+        runs = [d for d in self.root.iterdir() if d.is_dir()] if self.root.is_dir() else []
+        if not runs:
+            return None
+        newest_run = max(runs, key=lambda d: d.stat().st_mtime)
+        best, best_t = None, -1.0
+        for raw in raw_dirs(newest_run, self.raw_inner):
+            c = captures(raw)
+            if c:
+                t = c[-1][2].stat().st_mtime
+                if t > best_t:
+                    best, best_t = raw, t
+        return best
+
     def _newest(self):
+        if self.follow_newest:
+            raw = self._newest_raw_dir()
+            if raw is None:
+                return None
+            self.raw_dir = raw
         c = captures(self.raw_dir) if self.raw_dir.is_dir() else []
         return c[-1][2] if c else None
 
@@ -148,6 +180,8 @@ class LiveMonitor:
             if self.stream is not None:
                 self._catch_up()                   # rotation: finish the old file
                 self.files_done.append(Path(self.stream.path).name)
+                if Path(self.stream.path).parent != newest.parent:
+                    self.mapping = None            # new sub-run: cabling by its time
             self.stream = self._new_stream(newest)
         if self.stream is not None:
             self._catch_up()
@@ -199,6 +233,10 @@ class LiveMonitor:
         s = {
             "written": datetime.now().isoformat(timespec="seconds"),
             "raw_dir": str(self.raw_dir),
+            "run": (self.raw_dir.parent.parent.name if self.follow_newest and self.stream
+                    else None),
+            "subrun": (self.raw_dir.parent.name if self.follow_newest and self.stream
+                       else None),
             "capture": Path(self.stream.path).name if self.stream else None,
             "captures_finished": list(self.files_done),
             "setup": self.mapping.setup.name if self.mapping else None,

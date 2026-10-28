@@ -82,7 +82,10 @@ def main(argv=None):
                    help="reduce what is final now, then exit")
 
     p = sub.add_parser("live", help="rates from the capture being written, as data arrive")
-    p.add_argument("raw_dir", help="the directory dumpcap writes into")
+    p.add_argument("raw_dir", help="the directory dumpcap writes into (or, with "
+                                   "--follow-newest, the runs directory)")
+    p.add_argument("--follow-newest", action="store_true",
+                   help="raw_dir is a runs dir: follow the newest sub-run by itself")
     p.add_argument("--setup")
     p.add_argument("--when", help="time that picks the cabling (default: first packet)")
     p.add_argument("--no-mapping", action="store_true")
@@ -160,7 +163,7 @@ def main(argv=None):
                          window_s=a.window, data_format=a.format, out=a.out,
                          plot_dir=a.plot_dir, plot_every_s=a.plot_every if a.plot_dir else 0,
                          max_read_mb=a.max_read_mb, max_behind_mb=a.max_behind_mb,
-                         rss_limit_mb=a.rss_limit_mb)
+                         rss_limit_mb=a.rss_limit_mb, follow_newest=a.follow_newest)
         try:
             lm.run(interval_s=a.interval, duration_s=a.duration,
                    oom_score_adj=a.oom_score_adj)
