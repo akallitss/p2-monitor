@@ -40,11 +40,14 @@ def _rebin(h, factor):
 
 
 def _upper(h, q=0.999):
-    """Bin below which q of the summed histogram lies (x-axis limit)."""
-    tot = np.asarray(h, np.float64).sum(axis=0)
-    if tot.sum() == 0:
-        return len(tot)
-    return int(np.searchsorted(np.cumsum(tot), q * tot.sum())) + 1
+    """x-axis limit: the largest bin below which q of ANY one chip's hits lie.
+
+    Per chip, not on the sum: one hot chip's pedestal would otherwise set the
+    range for all and cut the other chips' tails (seen on run_123).
+    """
+    h = np.atleast_2d(np.asarray(h, np.float64))
+    tops = [int(np.searchsorted(np.cumsum(r), q * r.sum())) + 1 for r in h if r.sum() > 0]
+    return max(tops) if tops else h.shape[1]
 
 
 class _Figs:

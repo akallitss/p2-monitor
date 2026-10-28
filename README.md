@@ -133,6 +133,8 @@ array and every scalar the old reduce writes to be identical.
 
 ## Versions
 
+- **0.6.1** QA ADC axis range from the widest single chip, not the sum (a hot
+  chip's pedestal cut the other chips' tails).
 - **0.6.0** `p2-monitor qa <store>... --out-dir DIR [--events-json]` (and the
   drop-in `p2-monitor-qa`): the per-capture QA plots drawn from histograms, with
   vmm_pcapng_qa.py's file names and events.json: ADC, ADC by over-threshold,
