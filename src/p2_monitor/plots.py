@@ -78,7 +78,6 @@ def plot_store(root, out_dir, mapping=None):
     `mapping` defaults to the one recorded with the first store
     (setup_resolved.json), so a store is drawn with the cabling it was reduced with.
     """
-    plt, cmap, LogNorm = _mpl()
     stores = find_stores(root)
     if not stores:
         raise FileNotFoundError(f"no store under {root}")
@@ -87,8 +86,14 @@ def plot_store(root, out_dir, mapping=None):
     live = sum((s.get("volume") or {}).get("live_time_s") or 0 for s in scal)
     if mapping is None:
         mapping = store_mapping(stores[0])
+    return plot_counts(counts, live, mapping, _subtitle(scal, live), out_dir)
+
+
+def plot_counts(counts, live, mapping, subtitle, out_dir):
+    """The three PNGs from counts and their live time (stores or the live window)."""
+    plt, cmap, LogNorm = _mpl()
     r = channel_rates(counts, live, mapping)
-    sub = _subtitle(scal, live)
+    sub = subtitle
     os.makedirs(out_dir, exist_ok=True)
     out = []
 
@@ -97,7 +102,7 @@ def plot_store(root, out_dir, mapping=None):
                              os.path.join(out_dir, "rate_map.png")))
     out.append(_channel_rates(plt, cmap, LogNorm, r, sub,
                               os.path.join(out_dir, "channel_rates.png")))
-    out.append(_level_rates(plt, r, scal, sub, os.path.join(out_dir, "level_rates.png")))
+    out.append(_level_rates(plt, r, sub, os.path.join(out_dir, "level_rates.png")))
     return out
 
 
@@ -204,7 +209,7 @@ def _dots(ax, labels, values, unit):
                     transform=ax.get_yaxis_transform())
 
 
-def _level_rates(plt, r, scal, sub, path):
+def _level_rates(plt, r, sub, path):
     per_vmm = r.groupby("vmm")["rate_hz"].sum()
     has_det = "detector" in r and r["detector"].notna().any()
     fig, axes = plt.subplots(1, 2 if has_det else 1, figsize=(10, 0.22 * len(per_vmm) + 1.8),

@@ -13,7 +13,39 @@ p2-monitor reduce capture.pcapng --store-dir stores/cap1 --setup lab_saclay_2026
 p2-monitor rates  stores/cap1              # per detector / connector / hybrid / VMM
 p2-monitor plot   stores/ --out plots/     # merges every store under stores/
 p2-monitor trend  run_dir/ --csv trend.csv # one row per store, by capture start
+p2-monitor watch  runs/ --setup lab_saclay_2026          # reduce each closed capture
+p2-monitor live   runs/run_5/sub_00/raw_daq_data --setup lab_saclay_2026  # as data arrive
 ```
+
+## Watching and live monitoring
+
+Two ways to follow a run, which can run side by side:
+
+| | `watch` | `live` |
+| --- | --- | --- |
+| Reads | each capture once dumpcap has closed it | the capture dumpcap is writing, every few seconds |
+| Latency | about one rotation (44.4 s at SPS) | the poll interval (default 5 s) |
+| Writes | a store per capture, `hits_store/latest.json` | `live.json` (rates over the last `--window` s), optional PNGs |
+| For | the permanent record, trends, re-plotting | watching rates and volume while taking data |
+
+`watch` uses the DAQ watcher's rule for a finished capture: size unchanged
+since the previous poll, and a newer capture exists, the sub-run wrote
+`.capture_done`, or no write for twice `--capture-duration`. Newest first; a
+capture whose store has `scalars.json` is skipped, so it can be restarted at
+any time. Each reduce is a child process at nice 19 with `--timeout`; a capture
+that fails `--max-attempts` times is left alone. `latest.json` always describes
+the newest capture, also while older ones are backfilled.
+
+`live` follows the newest capture; when dumpcap rotates, it reads the old file
+to its end and moves on. Only bytes appended since the previous poll are read
+(`p2_decode.StreamDecoder`), with the decoder state carried over, so the hits
+are exactly those of decoding the finished files. Rates are over the last
+`--window` seconds of packet time; `data_age_s` in `live.json` shows how long
+ago the newest packet arrived, so a stalled DAQ is visible at a glance.
+
+`p2-monitor-reduce` is `reduce` with `vmm_reduce.py`'s calling convention, so the
+DAQ's `vmm_processor_watcher.py` can use it as its worker (config key `worker`)
+and keep its own memory-kill and stall protection.
 
 ```python
 from p2_monitor import process_capture, load_counts, channel_rates, store_mapping
@@ -72,5 +104,13 @@ array and every scalar the old reduce writes to be identical.
 - The efficiency stage (`vmm_efficiency.analyse`): it depends on the trigger
   channel and masks, which belong in the setup file first.
 - The full per-capture QA plot set of `render_from_store.py`.
-- A watcher: the DAQ's `vmm_processor_watcher.py` keeps running the reduce;
-  switching it to `p2_monitor.process_capture` is the next step.
+- The DAQ's own watcher still runs `vmm_reduce.py`; pointing its `worker` at
+  `p2-monitor-reduce`, or replacing it with `p2-monitor watch`, is the switch-over.
+
+## Versions
+
+- **0.2.0** `watch` (closed captures, DAQ finalisation rules, `latest.json`),
+  `live` (streaming rates over a sliding window, `live.json`, PNGs),
+  `p2-monitor-reduce`, `reduce --calibration`. Needs p2-decode 0.4.0.
+- **0.1.1** rate plots when no detector fired.
+- **0.1.0** reduce, rates, volume, plots, trend.

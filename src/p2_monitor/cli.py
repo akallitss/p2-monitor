@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import sys
 
 from .reduce import process_capture
 from .store import find_stores, load_scalars, trend_table
@@ -49,6 +50,48 @@ def main(argv=None):
     p.add_argument("--legacy-word-count", action="store_true")
     p.add_argument("--drop-columns", action="store_true",
                    help="keep only counts.npz + scalars.json")
+    p.add_argument("--calibration", help="vmm-sdat calibration JSON")
+    # accepted so p2-monitor-reduce is a drop-in for vmm_reduce.py as the DAQ
+    # watcher's worker; there is no efficiency stage yet
+    p.add_argument("--no-efficiency", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("--eff-window", type=float, help=argparse.SUPPRESS)
+
+    p = sub.add_parser("watch", help="reduce every capture once dumpcap closed it")
+    p.add_argument("root", help="runs dir, run dir, sub-run dir or raw_daq_data dir")
+    p.add_argument("--setup")
+    p.add_argument("--when", help="cabling time for every capture (default: each "
+                                  "capture's first packet); for replaying old data")
+    p.add_argument("--no-mapping", action="store_true")
+    p.add_argument("--format", default="SRS", choices=["SRS", "TRG"])
+    p.add_argument("--capture-duration", type=float, default=44.4, metavar="S",
+                   help="dumpcap rotation interval (default 44.4 s)")
+    p.add_argument("--poll", type=float, default=10, metavar="S",
+                   help="seconds between scans (default 10)")
+    p.add_argument("--raw-inner", default="raw_daq_data")
+    p.add_argument("--store-inner", default="hits_store")
+    p.add_argument("--drop-columns", action="store_true")
+    p.add_argument("--calibration")
+    p.add_argument("--max-attempts", type=int, default=3)
+    p.add_argument("--timeout", type=float, default=3600, metavar="S",
+                   help="limit per capture (default 3600 s)")
+    p.add_argument("--once", action="store_true",
+                   help="reduce what is final now, then exit")
+
+    p = sub.add_parser("live", help="rates from the capture being written, as data arrive")
+    p.add_argument("raw_dir", help="the directory dumpcap writes into")
+    p.add_argument("--setup")
+    p.add_argument("--when", help="time that picks the cabling (default: first packet)")
+    p.add_argument("--no-mapping", action="store_true")
+    p.add_argument("--format", default="SRS", choices=["SRS", "TRG"])
+    p.add_argument("--window", type=float, default=60, metavar="S",
+                   help="rates over the last S seconds of data (default 60)")
+    p.add_argument("--interval", type=float, default=5, metavar="S",
+                   help="seconds between polls (default 5)")
+    p.add_argument("--out", help="JSON written every poll (default <raw_dir>/../live.json)")
+    p.add_argument("--plot-dir", help="also redraw the rate PNGs here")
+    p.add_argument("--plot-every", type=float, default=60, metavar="S",
+                   help="seconds between redraws (default 60)")
+    p.add_argument("--duration", type=float, metavar="S", help="stop after S seconds")
 
     p = sub.add_parser("rates", help="print the rates of one store")
     p.add_argument("store")
@@ -64,9 +107,13 @@ def main(argv=None):
     a = ap.parse_args(argv)
 
     if a.cmd == "reduce":
+        cal = None
+        if a.calibration:
+            from p2_decode import load_calibration
+            cal = load_calibration(a.calibration)
         scal = process_capture(a.pcap_file, a.store_dir, setup=a.setup, when=a.when,
                                mapping=not a.no_mapping, data_format=a.format,
-                               keep_store=not a.drop_columns,
+                               calibration=cal, keep_store=not a.drop_columns,
                                legacy_word_count=a.legacy_word_count)
         print(f"{os.path.basename(a.pcap_file)}: {scal['n_hits']:,} hits  "
               f"decode={scal['decode_s']}s  reduce={scal['reduce_s']}s  "
@@ -84,6 +131,25 @@ def main(argv=None):
         for path in plot_store(a.root, a.out):
             print(path)
         return 0
+    if a.cmd == "watch":
+        from .watch import Watcher
+        Watcher(a.root, setup=a.setup, when=a.when, raw_inner=a.raw_inner,
+                store_inner=a.store_inner,
+                capture_duration_s=a.capture_duration, data_format=a.format,
+                no_mapping=a.no_mapping, drop_columns=a.drop_columns,
+                calibration=a.calibration, max_attempts=a.max_attempts,
+                timeout_s=a.timeout).run(poll_s=a.poll, once=a.once)
+        return 0
+    if a.cmd == "live":
+        from .live import LiveMonitor
+        lm = LiveMonitor(a.raw_dir, setup=a.setup, when=a.when, mapping=not a.no_mapping,
+                         window_s=a.window, data_format=a.format, out=a.out,
+                         plot_dir=a.plot_dir, plot_every_s=a.plot_every if a.plot_dir else 0)
+        try:
+            lm.run(interval_s=a.interval, duration_s=a.duration)
+        except KeyboardInterrupt:
+            pass
+        return 0
     if a.cmd == "trend":
         if not find_stores(a.root):
             raise SystemExit(f"no store under {a.root}")
@@ -94,6 +160,12 @@ def main(argv=None):
         else:
             print(df.to_string(index=False))
         return 0
+
+
+def reduce_main(argv=None):
+    """`p2-monitor-reduce`: the reduce command with vmm_reduce.py's calling
+    convention (capture first, then options), for the DAQ watcher's worker."""
+    return main(["reduce"] + list(sys.argv[1:] if argv is None else argv))
 
 
 if __name__ == "__main__":
