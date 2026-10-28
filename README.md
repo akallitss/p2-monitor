@@ -133,6 +133,10 @@ array and every scalar the old reduce writes to be identical.
 
 ## Versions
 
+- **0.4.2** same code as the v0.4.1 tag, whose `__version__` still read 0.4.0.
+- **0.4.1** `reduce --mapping-optional`: a capture no cabling entry covers is
+  reduced in electronics coordinates, with the reason in `mapping_error`; `live`
+  always does so and tries the mapping once per sub-run.
 - **0.4.0** `live --follow-newest <runs_dir>`: one live process for a whole session,
   moving to the newest sub-run by itself (`run`/`subrun` in live.json).
 - **0.3.1** with `--drop-columns` only `vmm` and `time` are written during the
