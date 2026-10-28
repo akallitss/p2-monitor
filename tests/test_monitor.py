@@ -109,3 +109,11 @@ def test_plots(capture, tmp_path):
 def test_si():
     assert si(2720, "Hz") == "2.72 kHz" and si(0.5, "Hz") == "500 mHz"
     assert si(43.78, "Hz/cm²") == "43.8 Hz/cm²"
+
+
+def test_plots_when_no_detector_fired(tmp_path):
+    # only the uncabled VMM 0 fires: every detector panel is empty, not an error
+    cap = write_pcapng(tmp_path / "c.pcapng",
+                       [srs_payload(0, 1, [hit_word(0, 44, 50, 4, 4)])] * 3, tsresol=3)
+    pmon.process_capture(cap, tmp_path / "s", setup=LAB, when=WHEN)
+    assert len(plot_store(tmp_path / "s", tmp_path / "png")) == 3

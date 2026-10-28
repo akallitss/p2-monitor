@@ -183,10 +183,13 @@ def _dots(ax, labels, values, unit):
     ax.scatter(values[pos], y[pos], s=40, color=BAR, zorder=3)
     ax.set_yticks(y, labels)
     ax.set_ylim(len(labels) - 0.5, -0.5)
-    ax.set_xscale("log")
     if pos.any():
+        ax.set_xscale("log")
         lo, hi = values[pos].min(), values[pos].max()
         ax.set_xlim(lo / 3, hi * 6)
+    else:
+        # nothing to place on a log axis: keep the rows and their "no hits"
+        ax.set_xticks([])
     ax.grid(axis="x", color=GRID, linewidth=0.6)
     ax.grid(axis="y", color=GRID, linewidth=0.4)
     ax.set_axisbelow(True)
