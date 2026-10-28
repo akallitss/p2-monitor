@@ -198,3 +198,63 @@ def test_live_survives_mapping_failure(tmp_path):
     s = LiveMonitor(raw, setup=LAB).step()
     assert s["mapping_error"].startswith("LookupError") and "rates" in s
     assert s["rates"]["per_chip"]["1:2"]["hits"] == 15
+
+
+# -- live from the network --------------------------------------------------------
+
+def _free_port():
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+def _send(port, payloads):
+    import socket
+    tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    for p in payloads:
+        tx.sendto(p, ("127.0.0.1", port))
+    tx.close()
+
+
+def test_live_udp_matches_file(tmp_path):
+    words = [marker_word(2, 7), hit_word(2, 0, 1, 1, 1), hit_word(2, 1, 1, 1, 1),
+             hit_word(2, 2, 1, 1, 1), hit_word(8, 3, 1, 1, 1)]
+    payloads = [srs_payload(0, 1, words)] * 40
+    port = _free_port()
+    lm = LiveMonitor(udp=f"127.0.0.1:{port}", setup=LAB, when=WHEN, window_s=3600,
+                     out=tmp_path / "live.json")
+    lm.step()                                       # opens the socket
+    _send(port, payloads[:25])
+    time.sleep(0.05)
+    lm.step()
+    _send(port, payloads[25:])
+    time.sleep(0.05)
+    s = lm.step()
+    assert s["source"] == f"udp://127.0.0.1:{port}" and s["capture"] is None
+    assert s["hits_total"] == 40 * 4 and s["sampling"]["window_fraction"] == 1.0
+    assert s["rates"]["per_detector"]["P2_IN"]["hits"] == 120
+    assert s["rates"]["per_detector"]["P2_MID"]["hits"] == 40
+    assert json.load(open(tmp_path / "live.json"))["hits_total"] == 160
+    lm.udp.close()
+
+
+def test_live_rates_scaled_for_lost_packets(tmp_path):
+    lm = LiveMonitor(udp="127.0.0.1:1", mapping=False, window_s=3600)
+    occ = np.zeros((512, 64), np.uint64)
+    occ[34, 0] = 100                                 # FEC 1 VMM 2 ch 0
+    lm.records = [[0.0, 10e9, occ, 100, 1000, 25, 75]]   # 25 decoded, 75 lost
+    s = lm.summary()
+    assert s["sampling"]["window_fraction"] == 0.25
+    # 100 hits in 25 % of 10 s of data -> 40 Hz for the full stream
+    assert s["rates"]["per_chip"]["1:2"]["rate_hz"] == pytest.approx(40.0)
+    assert s["volume"]["hits_per_s"] == pytest.approx(40.0)
+
+
+def test_live_needs_exactly_one_source():
+    with pytest.raises(ValueError, match="either raw_dir or udp"):
+        LiveMonitor()
+    with pytest.raises(ValueError, match="either raw_dir or udp"):
+        LiveMonitor("x", udp="127.0.0.1:6006")

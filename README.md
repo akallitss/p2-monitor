@@ -133,6 +133,14 @@ array and every scalar the old reduce writes to be identical.
 
 ## Versions
 
+- **0.5.0** `live --udp HOST:PORT` reads the FEC's stream from the network,
+  no file (p2-decode 0.8.0). dumpcap is unaffected: the kernel gives each
+  datagram to both. Each poll reads at most `--max-read-mb`; the kernel drops
+  and counts the rest. In both modes rates and volume are now divided by live
+  time x `sampling.window_fraction` (packets decoded / arrived, counting
+  kernel drops or file skips), i.e. scaled to the full stream: before, a file
+  monitor that skipped ahead under a flood under-reported its rates.
+  `live.json` gains `source`. Console lines are flushed (readable via a pipe).
 - **0.4.2** same code as the v0.4.1 tag, whose `__version__` still read 0.4.0.
 - **0.4.1** `reduce --mapping-optional`: a capture no cabling entry covers is
   reduced in electronics coordinates, with the reason in `mapping_error`; `live`

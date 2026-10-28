@@ -72,19 +72,34 @@ def set_oom_score_adj(value):
 class LiveMonitor:
     """Follows the newest capture in raw_dir and keeps windowed rates."""
 
-    def __init__(self, raw_dir, setup=None, when=None, mapping=True, window_s=60.0,
+    def __init__(self, raw_dir=None, setup=None, when=None, mapping=True, window_s=60.0,
                  data_format="SRS", out=None, plot_dir=None, plot_every_s=0,
                  max_read_mb=16, max_behind_mb=64, rss_limit_mb=None,
-                 follow_newest=False, raw_inner="raw_daq_data"):
-        self.root = Path(raw_dir)
+                 follow_newest=False, raw_inner="raw_daq_data", udp=None):
+        """raw_dir: capture directory (or runs directory with follow_newest).
+        udp: "HOST:PORT" to read the FEC's stream from the network instead of
+        a file; then each poll reads at most max_read_mb from the socket, the
+        kernel drops (and counts) the rest, and rates are scaled by the
+        fraction received.
+        """
+        if (raw_dir is None) == (udp is None):
+            raise ValueError("give either raw_dir or udp")
+        self.udp_addr = udp
+        self.udp = None                    # UdpStreamDecoder, opened on the first step
+        self.root = Path(raw_dir) if raw_dir is not None else None
         self.follow_newest, self.raw_inner = follow_newest, raw_inner
         self.raw_dir = self.root
         self.setup, self.when, self.use_mapping = setup, when, mapping
         self.window_s = float(window_s)
         self.bucket_s = None if self.window_s == float("inf") else self.window_s / MAX_BUCKETS
         self.data_format = data_format
-        self.out = Path(out) if out else (self.root / "live.json" if follow_newest
-                                          else self.raw_dir.parent / "live.json")
+        if out:
+            self.out = Path(out)
+        elif udp is not None:
+            self.out = Path("live.json")
+        else:
+            self.out = (self.root / "live.json" if follow_newest
+                        else self.raw_dir.parent / "live.json")
         self.plot_dir, self.plot_every_s = plot_dir, plot_every_s
         self.max_read = int(max_read_mb * MB)
         self.max_behind = int(max_behind_mb * MB)
@@ -92,7 +107,9 @@ class LiveMonitor:
         self._last_plot = 0.0
         self.stream = None                 # StreamDecoder of the followed file
         self.mapping = None
-        self.records = []                  # [t_first_ns, t_last_ns, occupancy, n_hits, bytes]
+        # [t_first_ns, t_last_ns, occupancy, n_hits, bytes, packets, dropped]
+        self.records = []
+        self._dropped_pending = 0          # drops reported before any record exists
         self.files_done = []
         self.total_hits = 0
         self.read_bytes = 0
@@ -134,12 +151,21 @@ class LiveMonitor:
 
     def _feed(self, cols, info):
         self.read_bytes += info.get("udp_payload_bytes", 0)
+        dropped = info.get("dropped", 0)
         if cols is None or info["t_first_ns"] is None:
+            # no hit to place, but kernel drops still belong to the window
+            if self.records:
+                self.records[-1][6] += dropped
+            else:
+                self._dropped_pending += dropped
             return
         n = len(cols["vmm"])
         self.total_hits += n
         occ = chip_occupancy(cols)
         t0, t1 = info["t_first_ns"], info["t_last_ns"]
+        packets = info.get("vm3_packets", info["packets"])
+        dropped += self._dropped_pending
+        self._dropped_pending = 0
         last = self.records[-1] if self.records else None
         if (last is not None and self.bucket_s is not None
                 and t0 // (self.bucket_s * 1e9) == last[0] // (self.bucket_s * 1e9)):
@@ -148,8 +174,24 @@ class LiveMonitor:
             last[2] += occ
             last[3] += n
             last[4] += info["udp_payload_bytes"]
+            last[5] += packets
+            last[6] += dropped
         else:
-            self.records.append([t0, t1, occ, n, info["udp_payload_bytes"]])
+            self.records.append([t0, t1, occ, n, info["udp_payload_bytes"], packets, dropped])
+
+    def _read_udp(self):
+        """Drain the socket up to max_read bytes (and ~1 s); the kernel drops the rest."""
+        if self.udp is None:
+            from p2_decode import UdpStreamDecoder
+            self.udp = UdpStreamDecoder(self.udp_addr, data_format=self.data_format)
+        budget, t_end = self.max_read, time.monotonic() + 1.0
+        while budget > 0 and time.monotonic() < t_end:
+            cols, info = self.udp.poll(max_bytes=budget,
+                                       max_seconds=max(0.01, t_end - time.monotonic()))
+            self._feed(cols, info)
+            if info["packets"] == 0:
+                return
+            budget -= max(info["udp_payload_bytes"], 1)
 
     def _catch_up(self):
         """Skip the backlog beyond max_behind, then read what is left."""
@@ -158,6 +200,9 @@ class LiveMonitor:
             before = f.skipped_packets
             self.skipped_bytes += self.stream.skip_to_tail(self.max_read)
             self.skipped_packets += f.skipped_packets - before
+            # skipped packets lie inside the window's time span: count them like
+            # kernel drops, so rates are scaled by the fraction actually read
+            self._dropped_pending += f.skipped_packets - before
         while True:
             cols, info = self.stream.poll()
             self._feed(cols, info)
@@ -188,6 +233,9 @@ class LiveMonitor:
 
     def step(self):
         """One poll. Returns the live summary dict (also written to `out`)."""
+        if self.udp_addr is not None:
+            self._read_udp()
+            return self._finish_step()
         newest = self._newest()
         if newest is not None and (self.stream is None or Path(self.stream.path) != newest):
             if self.stream is not None:
@@ -199,6 +247,9 @@ class LiveMonitor:
             self.stream = self._new_stream(newest)
         if self.stream is not None:
             self._catch_up()
+        return self._finish_step()
+
+    def _finish_step(self):
         if (self.mapping is None and self.use_mapping and self.records
                 and not self._mapping_tried):
             self.mapping = self._mapping_for(self.records[0][0])
@@ -243,12 +294,25 @@ class LiveMonitor:
         return ({"chip_ch": occ}, live, sum(r[3] for r in self.records),
                 sum(r[4] for r in self.records))
 
+    def window_fraction(self):
+        """Packets decoded / packets that arrived, over the window (1.0 if none lost).
+
+        Lost = dropped by the kernel (UDP) or skipped (file). Rates and volume
+        are divided by live time x this fraction, i.e. scaled to the full stream.
+        """
+        got = sum(r[5] for r in self.records)
+        lost = sum(r[6] for r in self.records)
+        return got / (got + lost) if got + lost else 1.0
+
     def summary(self):
         counts, live, hits, nbytes = self.window()
+        frac = self.window_fraction()
         seen = self.read_bytes + self.skipped_bytes
         s = {
             "written": datetime.now().isoformat(timespec="seconds"),
-            "raw_dir": str(self.raw_dir),
+            "source": (f"udp://{self.udp_addr}" if self.udp_addr is not None
+                       else "file"),
+            "raw_dir": str(self.raw_dir) if self.raw_dir is not None else None,
             "run": (self.raw_dir.parent.parent.name if self.follow_newest and self.stream
                     else None),
             "subrun": (self.raw_dir.parent.name if self.follow_newest and self.stream
@@ -266,6 +330,10 @@ class LiveMonitor:
                          "skipped_mb": round(self.skipped_bytes / 1e6, 3),
                          "skipped_packets": int(self.skipped_packets),
                          "fraction_read": round(self.read_bytes / seen, 6) if seen else None,
+                         # packets decoded / arrived in the window; rates are scaled by it
+                         "window_fraction": round(frac, 6),
+                         "dropped_packets": (int(self.udp.receiver.dropped_total)
+                                             if self.udp is not None else None),
                          "max_read_mb": round(self.max_read / MB, 3),
                          "memory_events": self.memory_events,
                          "rss_mb": own_rss_mb()},
@@ -276,9 +344,10 @@ class LiveMonitor:
             s["newest_packet"] = datetime.fromtimestamp(
                 newest / 1e9).isoformat(timespec="milliseconds")
         if counts is not None and live > 0:
-            s["volume"] = {"hits_per_s": round(hits / live, 6),
-                           "mb_per_min_udp": round(nbytes / 1e6 / live * 60, 6)}
-            s["rates"] = summarize(channel_rates(counts, live, self.mapping))
+            eff = live * frac                    # live time of the data actually read
+            s["volume"] = {"hits_per_s": round(hits / eff, 6),
+                           "mb_per_min_udp": round(nbytes / 1e6 / eff * 60, 6)}
+            s["rates"] = summarize(channel_rates(counts, eff, self.mapping))
         return s
 
     def _maybe_plot(self, summary):
@@ -291,21 +360,28 @@ class LiveMonitor:
         from .plots import plot_counts
         counts, live, hits, _ = self.window()
         if live > 0:
-            frac = summary["sampling"]["fraction_read"]
-            title = (f"live: last {self.window_s:.0f} s of {summary['capture']}\n"
+            frac = self.window_fraction()
+            what = summary["capture"] or summary["source"]
+            title = (f"live: last {self.window_s:.0f} s of {what}\n"
                      f"{live:.1f} s of data, {hits:,} hits, newest packet "
                      f"{summary.get('data_age_s')} s ago"
-                     + (f", {100 * frac:.0f} % of data read" if frac and frac < 1 else ""))
-            plot_counts(counts, live, self.mapping, title, self.plot_dir)
+                     + (f", {100 * frac:.0f} % of packets decoded, rates scaled"
+                        if frac < 1 else ""))
+            plot_counts(counts, live * frac, self.mapping, title, self.plot_dir)
 
-    def run(self, interval_s=5.0, duration_s=None, log=print, oom_score_adj=None):
+    def run(self, interval_s=5.0, duration_s=None, log=None, oom_score_adj=None):
         """Poll every interval_s until interrupted (or for duration_s)."""
+        if log is None:
+            def log(msg):                       # flushed: readable through a pipe too
+                print(msg, flush=True)
         if oom_score_adj is not None:
             set_oom_score_adj(oom_score_adj)
         t_end = time.time() + duration_s if duration_s is not None else None
-        log(f"[live] {self.raw_dir} -> {self.out}  window {self.window_s} s, every "
-            f"{interval_s} s, read <= {self.max_read / MB:g} MB/poll, skip beyond "
-            f"{self.max_behind / MB:g} MB")
+        src = f"udp://{self.udp_addr}" if self.udp_addr is not None else self.raw_dir
+        log(f"[live] {src} -> {self.out}  window {self.window_s} s, every "
+            f"{interval_s} s, read <= {self.max_read / MB:g} MB/poll"
+            + ("" if self.udp_addr is not None else
+               f", skip beyond {self.max_behind / MB:g} MB"))
         while True:
             t0 = time.time()
             s = self.step()
@@ -316,17 +392,18 @@ class LiveMonitor:
 
 
 def _status_line(s):
+    what = s["capture"] or s["source"]
     if "rates" not in s:
         if s["hits_total"]:
-            return (f"[live] {s['written']} {s['capture']}  {s['hits_total']:,} hits, "
+            return (f"[live] {s['written']} {what}  {s['hits_total']:,} hits, "
                     "no rate yet (window spans no time)")
-        return f"[live] {s['written']} waiting for data in {s['raw_dir']}"
+        return f"[live] {s['written']} waiting for data from {s['raw_dir'] or s['source']}"
     det = s["rates"].get("per_detector") or {}
     parts = [f"{k} {v['rate_hz']:.4g} Hz" for k, v in det.items()] or \
             [f"FEC {k} {v['rate_hz']:.4g} Hz" for k, v in s["rates"]["per_fec"].items()]
-    frac = s["sampling"]["fraction_read"]
-    samp = f"  read {100 * frac:.0f}%" if frac is not None and frac < 1 else ""
-    return (f"[live] {s['written']} {s['capture']}  {s['volume']['hits_per_s']:.4g} hits/s"
+    frac = s["sampling"]["window_fraction"]
+    samp = f"  decoded {100 * frac:.0f}%" if frac < 1 else ""
+    return (f"[live] {s['written']} {what}  {s['volume']['hits_per_s']:.4g} hits/s"
             f"  {s['volume']['mb_per_min_udp']:.3g} MB/min{samp}  | " + "  ".join(parts)
             + f"  | age {s['data_age_s']} s")
 

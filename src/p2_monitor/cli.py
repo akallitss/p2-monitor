@@ -84,9 +84,14 @@ def main(argv=None):
     p.add_argument("--once", action="store_true",
                    help="reduce what is final now, then exit")
 
-    p = sub.add_parser("live", help="rates from the capture being written, as data arrive")
-    p.add_argument("raw_dir", help="the directory dumpcap writes into (or, with "
-                                   "--follow-newest, the runs directory)")
+    p = sub.add_parser("live", help="rates as data arrive: from the capture being "
+                                    "written, or from the network (--udp)")
+    p.add_argument("raw_dir", nargs="?",
+                   help="the directory dumpcap writes into (or, with --follow-newest, "
+                        "the runs directory); omit with --udp")
+    p.add_argument("--udp", metavar="HOST:PORT",
+                   help="read the FEC's stream from this address (e.g. the data NIC "
+                        "192.168.1.16:6006) instead of a file; dumpcap is not affected")
     p.add_argument("--follow-newest", action="store_true",
                    help="raw_dir is a runs dir: follow the newest sub-run by itself")
     p.add_argument("--setup")
@@ -163,7 +168,10 @@ def main(argv=None):
         return 0
     if a.cmd == "live":
         from .live import LiveMonitor
-        lm = LiveMonitor(a.raw_dir, setup=a.setup, when=a.when, mapping=not a.no_mapping,
+        if (a.raw_dir is None) == (a.udp is None):
+            raise SystemExit("live: give either a raw_dir or --udp HOST:PORT")
+        lm = LiveMonitor(a.raw_dir, udp=a.udp, setup=a.setup, when=a.when,
+                         mapping=not a.no_mapping,
                          window_s=a.window, data_format=a.format, out=a.out,
                          plot_dir=a.plot_dir, plot_every_s=a.plot_every if a.plot_dir else 0,
                          max_read_mb=a.max_read_mb, max_behind_mb=a.max_behind_mb,
