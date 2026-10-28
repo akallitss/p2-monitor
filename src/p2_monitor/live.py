@@ -99,6 +99,8 @@ class LiveMonitor:
         self.skipped_bytes = 0
         self.skipped_packets = 0
         self.memory_events = 0
+        self.mapping_error = None
+        self._mapping_tried = False
 
     # -- following ------------------------------------------------------------
 
@@ -168,10 +170,21 @@ class LiveMonitor:
         return sd
 
     def _mapping_for(self, t_ns):
+        """The mapping at the data's time; on failure None, with the reason kept.
+
+        The live monitor never stops for a mapping problem: it then shows the
+        electronics view and says why the detector view is missing.
+        """
         if not self.use_mapping:
             return None
         when = self.when or datetime.fromtimestamp(t_ns / 1e9)
-        return p2_mapping.load_mapping(self.setup, when)
+        try:
+            m = p2_mapping.load_mapping(self.setup, when)
+            self.mapping_error = None
+            return m
+        except (LookupError, ValueError, OSError) as e:
+            self.mapping_error = f"{type(e).__name__}: {e}"
+            return None
 
     def step(self):
         """One poll. Returns the live summary dict (also written to `out`)."""
@@ -182,11 +195,14 @@ class LiveMonitor:
                 self.files_done.append(Path(self.stream.path).name)
                 if Path(self.stream.path).parent != newest.parent:
                     self.mapping = None            # new sub-run: cabling by its time
+                    self._mapping_tried = False
             self.stream = self._new_stream(newest)
         if self.stream is not None:
             self._catch_up()
-        if self.mapping is None and self.use_mapping and self.records:
+        if (self.mapping is None and self.use_mapping and self.records
+                and not self._mapping_tried):
             self.mapping = self._mapping_for(self.records[0][0])
+            self._mapping_tried = True             # once per sub-run, not every poll
         self._prune()
         self._check_memory()
         summary = self.summary()
@@ -240,6 +256,7 @@ class LiveMonitor:
             "capture": Path(self.stream.path).name if self.stream else None,
             "captures_finished": list(self.files_done),
             "setup": self.mapping.setup.name if self.mapping else None,
+            "mapping_error": self.mapping_error,
             "window_s": self.window_s,
             "live_time_s": round(live, 6),
             "hits_in_window": int(hits),

@@ -58,6 +58,9 @@ def main(argv=None):
     # watcher's worker; there is no efficiency stage yet
     p.add_argument("--no-efficiency", action="store_true", help=argparse.SUPPRESS)
     p.add_argument("--eff-window", type=float, help=argparse.SUPPRESS)
+    p.add_argument("--mapping-optional", action="store_true",
+                   help="if no mapping can be had, reduce in electronics coordinates "
+                        "and record why (scalars mapping_error) instead of failing")
 
     p = sub.add_parser("watch", help="reduce every capture once dumpcap closed it")
     p.add_argument("root", help="runs dir, run dir, sub-run dir or raw_daq_data dir")
@@ -131,6 +134,7 @@ def main(argv=None):
                                mapping=not a.no_mapping, data_format=a.format,
                                calibration=cal, keep_store=not a.drop_columns,
                                legacy_word_count=a.legacy_word_count,
+                               mapping_optional=a.mapping_optional,
                                **({"max_words": a.max_words} if a.max_words else {}))
         print(f"{os.path.basename(a.pcap_file)}: {scal['n_hits']:,} hits  "
               f"decode={scal['decode_s']}s  reduce={scal['reduce_s']}s  "

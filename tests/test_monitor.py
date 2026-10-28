@@ -129,3 +129,12 @@ def test_drop_columns_writes_little(capture, tmp_path):
     a = pmon.load_counts(tmp_path / "s", chip=False)
     b = pmon.load_counts(tmp_path / "f", chip=False)
     assert all(np.array_equal(a[k], b[k]) for k in a)
+
+
+def test_mapping_optional(capture, tmp_path):
+    # the fixture's packets are stamped 1970: no lab cabling covers them
+    with pytest.raises(LookupError, match="no cabling before"):
+        pmon.process_capture(capture, tmp_path / "a", setup=LAB)
+    scal = pmon.process_capture(capture, tmp_path / "b", setup=LAB, mapping_optional=True)
+    assert scal["setup"] is None and scal["mapping_error"].startswith("LookupError")
+    assert scal["rates"]["per_chip"]["1:2"]["hits"] == 22 and "per_detector" not in scal["rates"]

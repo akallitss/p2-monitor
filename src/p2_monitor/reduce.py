@@ -42,12 +42,18 @@ def capture_start(meta):
 
 def process_capture(pcap, store_dir, setup=None, when=None, mapping=True,
                     data_format="SRS", calibration=None, keep_store=True,
-                    legacy_word_count=False, max_words=p2_decode.MAX_WORDS):
+                    legacy_word_count=False, max_words=p2_decode.MAX_WORDS,
+                    mapping_optional=False):
     """pcapng -> store. Returns the scalars dict.
 
     setup:    p2-mapping setup name or path; None resolves it ($P2_SETUP, ...)
     when:     time that picks the cabling; default the capture's first packet
     mapping:  False reduces in electronics coordinates only (no setup needed)
+    mapping_optional: if the mapping cannot be had (no setup chosen, or the
+              capture's time is outside every cabling entry), reduce in
+              electronics coordinates and record why in scalars
+              "mapping_error", instead of failing. For online workers, where
+              losing the reduction costs more than losing the detector view.
     """
     t0 = time.time()
     store_dir = str(store_dir).rstrip("/")
@@ -64,10 +70,16 @@ def process_capture(pcap, store_dir, setup=None, when=None, mapping=True,
                                columns=None if keep_store else ["vmm", "time"])
     t_decode = time.time() - t0
 
-    m = None
+    m, mapping_error = None, None
     if mapping:
-        m = p2_mapping.load_mapping(setup, when or capture_start(meta))
-        m.write_resolved(os.path.join(partial, "setup_resolved.json"))
+        try:
+            m = p2_mapping.load_mapping(setup, when or capture_start(meta))
+        except (LookupError, ValueError, OSError) as e:
+            if not mapping_optional:
+                raise
+            mapping_error = f"{type(e).__name__}: {e}"
+        if m is not None:
+            m.write_resolved(os.path.join(partial, "setup_resolved.json"))
 
     counts, chip_counts = acc.finish(partial)
     del acc
@@ -100,6 +112,8 @@ def process_capture(pcap, store_dir, setup=None, when=None, mapping=True,
     t_start = capture_start(meta)
     scal["capture_start"] = t_start.isoformat() if t_start else None
     scal["setup"] = m.setup.name if m else None
+    if mapping_error:
+        scal["mapping_error"] = mapping_error
     scal["versions"] = {"p2_decode": p2_decode.__version__,
                         "p2_mapping": p2_mapping.__version__ if m else None,
                         "p2_monitor": __version__}

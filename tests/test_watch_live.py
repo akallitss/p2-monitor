@@ -189,3 +189,12 @@ def test_live_follows_newest_subrun(tmp_path):
     s = lm.step()
     assert (s["run"], s["captures_finished"], s["hits_total"]) == ("run_2", [_name(1)], 60)
     assert lm.out == runs / "live.json"
+
+
+def test_live_survives_mapping_failure(tmp_path):
+    raw = tmp_path / "raw_daq_data"
+    raw.mkdir()
+    _capture(raw / _name(1), 5)                       # 1970 timestamps, no `when`
+    s = LiveMonitor(raw, setup=LAB).step()
+    assert s["mapping_error"].startswith("LookupError") and "rates" in s
+    assert s["rates"]["per_chip"]["1:2"]["hits"] == 15
