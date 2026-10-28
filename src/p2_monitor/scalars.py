@@ -86,3 +86,50 @@ def add_detector_scalars(scal, cols, mapping):
     if per:
         scal["per_station"] = per
     return scal
+
+
+def percentile_from_hist(hist, q):
+    """np.percentile(values, 100*q) (linear method) from an integer-value histogram.
+
+    Exact, not binned: with integer data the k-th sorted value is the first
+    bin whose cumulative count exceeds k.
+    """
+    hist = np.asarray(hist, dtype=np.int64)
+    n = int(hist.sum())
+    if n == 0:
+        return None
+    cum = np.cumsum(hist)
+    h = (n - 1) * q
+    lo, hi = int(np.floor(h)), int(np.ceil(h))
+    x_lo = int(np.searchsorted(cum, lo, side="right"))
+    x_hi = int(np.searchsorted(cum, hi, side="right"))
+    return float(x_lo + (h - lo) * (x_hi - x_lo))
+
+
+def detector_chips(mapping):
+    """{detector: sorted chip ids}; a row without a FEC covers that VMM on every FEC."""
+    from .counts import NFEC, NV
+    out = {}
+    t = mapping.table[["detector", "fec", "vmm"]].drop_duplicates()
+    for det, fec, vmm in t.itertuples(index=False):
+        chips = [f * NV + int(vmm) for f in range(NFEC)] if fec < 0 else [int(fec) * NV + int(vmm)]
+        out.setdefault(det, set()).update(chips)
+    return {d: sorted(c) for d, c in out.items()}
+
+
+def add_detector_scalars_from_counts(scal, chip_counts, mapping):
+    """per_station from the chip ADC histograms: same numbers as
+    add_detector_scalars, without holding the hits."""
+    per = {}
+    for det, chips in detector_chips(mapping).items():
+        if det not in mapping.setup.detectors:
+            continue
+        h = np.asarray(chip_counts["chip_adc"])[chips].sum(axis=0)
+        n = int(h.sum())
+        if not n:
+            continue
+        per[det] = {"n_hits": n, "adc_p50": percentile_from_hist(h, 0.50),
+                    "adc_p90": percentile_from_hist(h, 0.90)}
+    if per:
+        scal["per_station"] = {d: per[d] for d in mapping.setup.detectors if d in per}
+    return scal

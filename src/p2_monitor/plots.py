@@ -107,13 +107,17 @@ def plot_counts(counts, live, mapping, subtitle, out_dir):
 
 
 def _rate_map(plt, cmap, LogNorm, r, mapping, sub, path):
+    """One pad map per detector, on a grid with one shared colour scale."""
     dets = list(mapping.setup.detectors)
     pads = load_pads(mapping.setup.design)
-    m = r[r["mapped"].fillna(False).astype(bool)]
+    m = r[r["mapped"]]
     norm = _norm(LogNorm, m["rate_hz_per_cm2"])
-    fig, axes = plt.subplots(1, len(dets), figsize=(4.2 * len(dets), 4.6),
+    ncol = min(len(dets), 4)
+    nrow = -(-len(dets) // ncol)
+    fig, axes = plt.subplots(nrow, ncol, figsize=(4.2 * ncol, 4.3 * nrow + 0.6),
                              squeeze=False, constrained_layout=True)
-    for ax, det in zip(axes[0], dets):
+    sc = None
+    for ax, det in zip(axes.flat, dets):
         ax.scatter(pads["pad_cx"], pads["pad_cy"], s=7, marker="s", c=EMPTY,
                    linewidths=0)
         d = m[m["detector"] == det]
@@ -125,12 +129,13 @@ def _rate_map(plt, cmap, LogNorm, r, mapping, sub, path):
         ax.set_title(f"{det}" + (f"  (z = {z:.0f} mm)" if z is not None else ""), loc="left")
         ax.text(0.0, -0.02, f"{len(d) - dead} of {len(d)} cabled pads fired",
                 transform=ax.transAxes, va="top", color=INK_2, fontsize=8)
+    for ax in axes.flat:
         ax.set_aspect("equal")
         ax.set_xticks([])
         ax.set_yticks([])
-        for s in ax.spines.values():
-            s.set_visible(False)
-    cb = fig.colorbar(sc, ax=axes[0].tolist(), shrink=0.8, pad=0.01)
+        for s_ in ax.spines.values():
+            s_.set_visible(False)
+    cb = fig.colorbar(sc, ax=axes.ravel().tolist(), shrink=0.8, pad=0.01)
     cb.set_label("Hz/cm² (log scale)")
     cb.outline.set_visible(False)
     fig.suptitle("Hit rate per pad area (grey: no hits or not cabled)\n" + sub,
@@ -140,40 +145,55 @@ def _rate_map(plt, cmap, LogNorm, r, mapping, sub, path):
     return path
 
 
+def _chip_label(fec, vmm):
+    return f"VMM {vmm}" if fec < 0 else f"FEC {fec} VMM {vmm}"
+
+
 def _channel_rates(plt, cmap, LogNorm, r, sub, path):
-    vmms = sorted(int(v) for v in r["vmm"].unique())
-    grid = np.full((len(vmms), 64), np.nan)
-    row = {v: i for i, v in enumerate(vmms)}
-    for v, c, x in zip(r["vmm"], r["ch"], r["rate_hz"]):
-        grid[row[int(v)], int(c)] = x
+    """Rate per (chip, channel), one row per chip; dead cabled channels marked."""
+    chips = sorted({(int(f), int(v)) for f, v in r[["fec", "vmm"]].itertuples(index=False)})
+    grid = np.full((len(chips), 64), np.nan)
+    row = {c: i for i, c in enumerate(chips)}
+    for f, v, c, x in zip(r["fec"], r["vmm"], r["ch"], r["rate_hz"]):
+        grid[row[(int(f), int(v))], int(c)] = x
     norm = _norm(LogNorm, grid)
-    fig, ax = plt.subplots(figsize=(10, 0.28 * len(vmms) + 1.6), constrained_layout=True)
+    h = min(0.28, max(0.06, 18.0 / max(len(chips), 1)))      # rows shrink when there are many
+    fig, ax = plt.subplots(figsize=(10, h * len(chips) + 1.8), constrained_layout=True)
     from matplotlib.colors import ListedColormap
     ax.imshow(np.where(np.isnan(grid), 1, np.nan), cmap=ListedColormap([EMPTY]),
               aspect="auto", interpolation="nearest")
-    zero = np.where(grid == 0, 1, np.nan)
     ax.imshow(np.where(grid > 0, grid, np.nan), cmap=cmap, norm=norm, aspect="auto",
               interpolation="nearest")
-    yy, xx = np.nonzero(zero == 1)
-    ax.scatter(xx, yy, marker="x", s=10, c=INK_2, linewidths=0.8, label="cabled, no hits")
-    ax.set_yticks(range(len(vmms)), [f"VMM {v}" for v in vmms])
+    yy, xx = np.nonzero(grid == 0)
+    if len(chips) <= 40:
+        ax.scatter(xx, yy, marker="x", s=10, c=INK_2, linewidths=0.8, label="cabled, no hits")
+    elif len(xx):
+        ax.imshow(np.where(grid == 0, 1, np.nan), cmap=ListedColormap([INK_2]),
+                  aspect="auto", interpolation="nearest")
+    step = 1 if len(chips) <= 40 else max(1, len(chips) // 40)
+    ax.set_yticks(range(0, len(chips), step),
+                  [_chip_label(*chips[i]) for i in range(0, len(chips), step)],
+                  fontsize=8 if len(chips) <= 40 else 6)
     ax.set_xticks(range(0, 64, 8))
     ax.set_xlabel("channel")
-    det = r.set_index("vmm")["detector"].dropna() if "detector" in r else None
-    if det is not None:
-        lab = det.groupby(level=0).first()
-        for v, i in row.items():
-            if v in lab.index:
-                ax.text(64.3, i, lab[v], va="center", fontsize=7, color=INK_2)
+    if "detector" in r and len(chips) <= 40:
+        lab = r.dropna(subset=["detector"]).groupby(["fec", "vmm"])["detector"].first()
+        for c, i in row.items():
+            if c in lab.index:
+                ax.text(64.3, i, lab[c], va="center", fontsize=7, color=INK_2)
     cb = fig.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=cmap), ax=ax, pad=0.05)
     cb.set_label("rate per channel (Hz, log scale)")
     cb.outline.set_visible(False)
     if len(xx):
-        ax.legend(loc="upper left", bbox_to_anchor=(0, -0.06), frameon=False, fontsize=8)
-    ax.set_title("Hit rate per channel (grey rows: VMM not cabled to a detector)\n" + sub,
+        if len(chips) <= 40:
+            ax.legend(loc="upper left", bbox_to_anchor=(0, -0.06), frameon=False, fontsize=8)
+        else:
+            ax.text(0, -0.06, "dark grey: cabled, no hits", transform=ax.transAxes,
+                    fontsize=8, color=INK_2, va="top")
+    ax.set_title("Hit rate per channel (light grey: chip not cabled to a detector)\n" + sub,
                  loc="left")
-    for s in ax.spines.values():
-        s.set_visible(False)
+    for s_ in ax.spines.values():
+        s_.set_visible(False)
     fig.savefig(path, dpi=130)
     plt.close(fig)
     return path
@@ -210,15 +230,26 @@ def _dots(ax, labels, values, unit):
 
 
 def _level_rates(plt, r, sub, path):
-    per_vmm = r.groupby("vmm")["rate_hz"].sum()
+    """Rate per chip (or per hybrid / FEC when chips are many) and per detector area."""
+    chips = r.groupby(["fec", "vmm"])["rate_hz"].sum()
     has_det = "detector" in r and r["detector"].notna().any()
-    fig, axes = plt.subplots(1, 2 if has_det else 1, figsize=(10, 0.22 * len(per_vmm) + 1.8),
+    if len(chips) <= 40:
+        labels = [_chip_label(f, v) for f, v in chips.index]
+        values, what = chips.to_numpy(), "chip"
+    elif has_det:
+        hyb = r[r["mapped"]].groupby("hybrid")["rate_hz"].sum()
+        labels, values, what = [f"H{int(h)}" for h in hyb.index], hyb.to_numpy(), "hybrid"
+    else:
+        fec = r.groupby("fec")["rate_hz"].sum()
+        labels, values, what = [f"FEC {int(f)}" for f in fec.index], fec.to_numpy(), "FEC"
+    fig, axes = plt.subplots(1, 2 if has_det else 1,
+                             figsize=(10, min(0.22, max(0.1, 9.0 / len(labels))) * len(labels) + 1.8),
                              squeeze=False, constrained_layout=True,
                              gridspec_kw={"width_ratios": [3, 2] if has_det else [1]})
-    _dots(axes[0][0], [f"VMM {v}" for v in per_vmm.index], per_vmm.to_numpy(), "Hz")
-    axes[0][0].set_title("Rate per VMM (Hz, log scale)", loc="left")
+    _dots(axes[0][0], labels, values, "Hz")
+    axes[0][0].set_title(f"Rate per {what} (Hz, log scale)", loc="left")
     if has_det:
-        m = r[r["mapped"].fillna(False).astype(bool)]
+        m = r[r["mapped"]]
         g = m.groupby("detector")
         areal = (g["rate_hz"].sum() / (g["pad_area_mm2"].sum() / 100.0))
         _dots(axes[0][1], list(areal.index), areal.to_numpy(), "Hz/cm²")

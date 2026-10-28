@@ -8,9 +8,14 @@ the results: it never has to guess whether a store is still being written.
 Store layout (a superset of the vmm_reduce.py store, so its readers keep
 working):
     <column>.npy, meta.json   p2-decode column store
-    counts.npz                per-VMM histograms (counts.py)
+    counts.npz                per-VMM histograms (counts.py), the old layout
+    counts_chip.npz           per-chip (fec, vmm) histograms, uint64
     scalars.json              trend record + "rates" + "volume" + versions
     setup_resolved.json       the mapping used (setup, cabling entry, hashes)
+
+Memory is bounded by one decode chunk (max_words words, ~150 MB at the
+default), not by the capture: the histograms fill while decoding
+(CountsAccumulator), and nothing reads the whole capture back.
 """
 
 import datetime as dt
@@ -24,9 +29,9 @@ import p2_decode
 import p2_mapping
 
 from . import __version__
-from .counts import build_counts
+from .counts import NV, CountsAccumulator
 from .rates import channel_rates, summarize, volume
-from .scalars import add_detector_scalars, build_scalars
+from .scalars import add_detector_scalars_from_counts, build_scalars
 
 
 def capture_start(meta):
@@ -37,7 +42,7 @@ def capture_start(meta):
 
 def process_capture(pcap, store_dir, setup=None, when=None, mapping=True,
                     data_format="SRS", calibration=None, keep_store=True,
-                    legacy_word_count=False):
+                    legacy_word_count=False, max_words=p2_decode.MAX_WORDS):
     """pcapng -> store. Returns the scalars dict.
 
     setup:    p2-mapping setup name or path; None resolves it ($P2_SETUP, ...)
@@ -50,9 +55,10 @@ def process_capture(pcap, store_dir, setup=None, when=None, mapping=True,
     if os.path.isdir(partial):
         shutil.rmtree(partial, ignore_errors=True)
 
+    acc = CountsAccumulator()
     meta = p2_decode.decode_to(pcap, partial, data_format=data_format,
-                               calibration=calibration,
-                               legacy_word_count=legacy_word_count)
+                               calibration=calibration, max_words=max_words,
+                               legacy_word_count=legacy_word_count, on_chunk=acc.add)
     t_decode = time.time() - t0
 
     m = None
@@ -60,9 +66,10 @@ def process_capture(pcap, store_dir, setup=None, when=None, mapping=True,
         m = p2_mapping.load_mapping(setup, when or capture_start(meta))
         m.write_resolved(os.path.join(partial, "setup_resolved.json"))
 
-    cols, _ = p2_decode.load_hits(partial, derive_cols=False)
-    counts = build_counts(cols)
+    counts, chip_counts = acc.finish(partial)
+    del acc
     np.savez_compressed(os.path.join(partial, "counts.npz"), **counts)
+    np.savez_compressed(os.path.join(partial, "counts_chip.npz"), **chip_counts)
 
     # VMMs expected in the data: the cabled ones and the trigger VMM. Unlike
     # vmm_reduce.py (which took vmm_stations' 2-19), trigger hits are not
@@ -72,20 +79,21 @@ def process_capture(pcap, store_dir, setup=None, when=None, mapping=True,
         known = set(int(v) for v in m.table["vmm"].unique())
         if m.setup.trigger:
             known.add(int(m.setup.trigger["vmm"]))
-    scal = build_scalars(cols, counts, meta, known)
+    scal = build_scalars({"vmm": ()}, counts, meta, known)
     scal["source"] = os.path.abspath(str(pcap))
     scal["capture"] = os.path.basename(str(pcap))
     scal["mtime"] = os.path.getmtime(pcap)
     scal["decode_s"] = round(t_decode, 2)
     if m is not None:
-        add_detector_scalars(scal, cols, m)
-    del cols
+        add_detector_scalars_from_counts(scal, chip_counts, m)
+    chips = np.flatnonzero(np.asarray(chip_counts["chip_ch"]).sum(axis=1))
+    scal["fecs"] = sorted({int(c) // NV for c in chips})
 
     vol = volume(meta, file_bytes=os.path.getsize(pcap))
     scal["volume"] = vol
     live = vol.get("live_time_s")
     scal["rates"] = {"live_time_s": live,
-                     **summarize(channel_rates(counts, live, m))}
+                     **summarize(channel_rates(chip_counts, live, m))}
     t_start = capture_start(meta)
     scal["capture_start"] = t_start.isoformat() if t_start else None
     scal["setup"] = m.setup.name if m else None

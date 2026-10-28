@@ -124,6 +124,8 @@ def _reduce_cmd(pcap, store_dir, opts):
         cmd.append("--drop-columns")
     if opts.get("calibration"):
         cmd += ["--calibration", str(opts["calibration"])]
+    if opts.get("max_words"):
+        cmd += ["--max-words", str(int(opts["max_words"]))]
     return cmd
 
 
@@ -173,15 +175,16 @@ class Watcher:
                  store_inner="hits_store", capture_duration_s=44.4,
                  data_format="SRS", no_mapping=False, drop_columns=False,
                  calibration=None, max_attempts=3, timeout_s=3600, nice=19,
-                 threads=4, log=print):
+                 threads=4, max_words=None, oom_score_adj=500, log=print):
         self.root = Path(root)
         self.raw_inner, self.store_inner = raw_inner, store_inner
         self.capture_duration_s = capture_duration_s
         self.opts = {"setup": setup, "when": when, "data_format": data_format,
                      "no_mapping": no_mapping, "drop_columns": drop_columns,
-                     "calibration": calibration}
+                     "calibration": calibration, "max_words": max_words}
         self.max_attempts, self.timeout_s = max_attempts, timeout_s
         self.nice, self.threads = nice, threads
+        self.oom_score_adj = oom_score_adj
         self.log = log
         self.last_sizes = {}
         self.failures = {}
@@ -207,11 +210,23 @@ class Watcher:
         store.parent.mkdir(parents=True, exist_ok=True)
         cmd = _reduce_cmd(pcap, store, self.opts)
         t0 = time.time()
-        nice = self.nice
+        nice, oom = self.nice, self.oom_score_adj
+
+        def lower_priority():
+            # restartable work goes first, both for the CPU and for the kernel's
+            # OOM killer (the DAQ's run_monitored uses oom_score_adj 500 too)
+            if nice:
+                os.nice(nice)
+            if oom is not None:
+                try:
+                    with open("/proc/self/oom_score_adj", "w") as f:
+                        f.write(str(int(oom)))
+                except OSError:
+                    pass
         try:
             r = subprocess.run(cmd, capture_output=True, text=True,
                                timeout=self.timeout_s, env=_child_env(self.threads),
-                               preexec_fn=(lambda: os.nice(nice)) if nice else None)
+                               preexec_fn=lower_priority)
             ok, why = r.returncode == 0, (r.stderr.strip().splitlines() or ["?"])[-1]
         except subprocess.TimeoutExpired:
             ok, why = False, f"timeout after {self.timeout_s} s"

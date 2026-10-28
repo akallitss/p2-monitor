@@ -51,6 +51,9 @@ def main(argv=None):
     p.add_argument("--drop-columns", action="store_true",
                    help="keep only counts.npz + scalars.json")
     p.add_argument("--calibration", help="vmm-sdat calibration JSON")
+    p.add_argument("--max-words", type=int, default=None,
+                   help="decode chunk size in words; bounds memory (default "
+                        "p2_decode.MAX_WORDS, ~250 MB peak)")
     # accepted so p2-monitor-reduce is a drop-in for vmm_reduce.py as the DAQ
     # watcher's worker; there is no efficiency stage yet
     p.add_argument("--no-efficiency", action="store_true", help=argparse.SUPPRESS)
@@ -72,6 +75,7 @@ def main(argv=None):
     p.add_argument("--drop-columns", action="store_true")
     p.add_argument("--calibration")
     p.add_argument("--max-attempts", type=int, default=3)
+    p.add_argument("--max-words", type=int, help="decode chunk size (bounds memory)")
     p.add_argument("--timeout", type=float, default=3600, metavar="S",
                    help="limit per capture (default 3600 s)")
     p.add_argument("--once", action="store_true",
@@ -92,6 +96,15 @@ def main(argv=None):
     p.add_argument("--plot-every", type=float, default=60, metavar="S",
                    help="seconds between redraws (default 60)")
     p.add_argument("--duration", type=float, metavar="S", help="stop after S seconds")
+    p.add_argument("--max-read-mb", type=float, default=16,
+                   help="bytes read per poll at most (default 16 MB)")
+    p.add_argument("--max-behind-mb", type=float, default=64,
+                   help="skip to the newest data when more is unread (default 64 MB)")
+    p.add_argument("--rss-limit-mb", type=float,
+                   help="shed the window and halve reads above this own memory")
+    p.add_argument("--oom-score-adj", type=int, default=500,
+                   help="kernel OOM priority of this process (default 500, as the DAQ "
+                        "gives its restartable jobs)")
 
     p = sub.add_parser("rates", help="print the rates of one store")
     p.add_argument("store")
@@ -114,7 +127,8 @@ def main(argv=None):
         scal = process_capture(a.pcap_file, a.store_dir, setup=a.setup, when=a.when,
                                mapping=not a.no_mapping, data_format=a.format,
                                calibration=cal, keep_store=not a.drop_columns,
-                               legacy_word_count=a.legacy_word_count)
+                               legacy_word_count=a.legacy_word_count,
+                               **({"max_words": a.max_words} if a.max_words else {}))
         print(f"{os.path.basename(a.pcap_file)}: {scal['n_hits']:,} hits  "
               f"decode={scal['decode_s']}s  reduce={scal['reduce_s']}s  "
               f"total={scal['total_s']}s -> {a.store_dir}")
@@ -138,15 +152,18 @@ def main(argv=None):
                 capture_duration_s=a.capture_duration, data_format=a.format,
                 no_mapping=a.no_mapping, drop_columns=a.drop_columns,
                 calibration=a.calibration, max_attempts=a.max_attempts,
-                timeout_s=a.timeout).run(poll_s=a.poll, once=a.once)
+                timeout_s=a.timeout, max_words=a.max_words).run(poll_s=a.poll, once=a.once)
         return 0
     if a.cmd == "live":
         from .live import LiveMonitor
         lm = LiveMonitor(a.raw_dir, setup=a.setup, when=a.when, mapping=not a.no_mapping,
                          window_s=a.window, data_format=a.format, out=a.out,
-                         plot_dir=a.plot_dir, plot_every_s=a.plot_every if a.plot_dir else 0)
+                         plot_dir=a.plot_dir, plot_every_s=a.plot_every if a.plot_dir else 0,
+                         max_read_mb=a.max_read_mb, max_behind_mb=a.max_behind_mb,
+                         rss_limit_mb=a.rss_limit_mb)
         try:
-            lm.run(interval_s=a.interval, duration_s=a.duration)
+            lm.run(interval_s=a.interval, duration_s=a.duration,
+                   oom_score_adj=a.oom_score_adj)
         except KeyboardInterrupt:
             pass
         return 0

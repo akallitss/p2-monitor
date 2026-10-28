@@ -70,18 +70,42 @@ that exists is complete. A superset of the `vmm_reduce.py` store, so
 | File | Content |
 | --- | --- |
 | `<column>.npy`, `meta.json` | p2-decode hit columns and decoder meta (dropped with `--drop-columns`) |
-| `counts.npz` | per-VMM histograms, additive across captures |
+| `counts.npz` | per-VMM histograms, additive across captures (the old layout) |
+| `counts_chip.npz` | per-chip histograms, chip = `fec*32 + vmm`, uint64 |
 | `scalars.json` | trend record (`vmm_reduce` keys) + `rates` + `volume` + `capture_start`, `setup`, `versions` |
 | `setup_resolved.json` | the mapping used; `store_mapping(store)` rebuilds it |
+
+## Scale and memory
+
+Built for the full experiment (180 hybrids = 360 VMMs over 12+ FECs), not for
+the lab's cosmic rates, and no limit assumes a data rate:
+
+- **Chips are (fec, vmm).** A VMM id is 5 bits and repeats across FECs, so rates
+  and histograms are per chip (`per_chip` keys `"fec:vmm"`, `counts_chip.npz`).
+  `counts.npz` keeps the per-VMM layout for the existing QA readers; with
+  several FECs it merges chips that share a VMM id.
+- **reduce memory does not grow with the capture.** Histograms fill while
+  decoding, in chunks of `--max-words` (default 500k): peak anonymous memory
+  ~250 MB for a 141 MB capture and the same for a 425 MB one, measured. The
+  capture itself is memory-mapped; those pages are reclaimable page cache.
+  Each reduce under `watch` runs at nice 19 with `oom_score_adj` 500.
+- **live is a sampling monitor.** It reads at most `--max-read-mb` (16) per poll,
+  skips to the newest data when more than `--max-behind-mb` (64) is unread and
+  reports `sampling.fraction_read`, keeps at most ~60 time buckets of channel
+  occupancy, sheds its window above `--rss-limit-mb`, and sets its own
+  `--oom-score-adj` (500). Measured: 286 MB peak catching up a whole 141 MB
+  file, 192 MB with skip-ahead.
+- Keeping the hit columns costs ~3.4x the capture on disk; `--drop-columns`
+  keeps only the histograms and scalars.
 
 ## What is measured
 
 - **Rates** are hits / live time, the span of the capture's packet timestamps.
-  Levels: `per_vmm`, `per_hybrid`, `per_connector` (`P2_IN:c4`), `per_half`
-  (`P2_IN:c4:bot`), `per_detector`, each with hits, rate, channels, live
-  channels, the hottest channel's rate, and Hz/cm² for the physical levels.
-  Cabled channels that never fire are kept at rate 0. Hits on VMMs not cabled
-  to a detector are counted under `uncabled`.
+  Levels: `per_fec`, `per_chip` (`"12:2"`), `per_hybrid`, `per_connector`
+  (`P2_IN:c4`), `per_half` (`P2_IN:c4:bot`), `per_detector`, each with hits,
+  rate, channels, live channels, the hottest channel's rate, and Hz/cm² for
+  the physical levels. Cabled channels that never fire are kept at rate 0.
+  Hits on chips not cabled to a detector are counted under `uncabled`.
 - **Data volume**: MB/min of the capture file (what `rate_guard` limits) and of
   the FEC payloads, hits/s and packets/s, per FEC.
 - **Frame loss** is reported as not measurable: the ALINX firmware's SRS frame
@@ -109,6 +133,12 @@ array and every scalar the old reduce writes to be identical.
 
 ## Versions
 
+- **0.3.0** per-chip `(fec, vmm)` rates and `counts_chip.npz`; single-pass reduce
+  with bounded memory (`--max-words`); exact detector ADC percentiles from
+  histograms; `live` limits (`--max-read-mb`, `--max-behind-mb` skip-ahead,
+  `--rss-limit-mb`, `--oom-score-adj`) and bounded window; `watch` children
+  get `oom_score_adj` 500; plots scale to many chips and detectors. Rate keys
+  changed: `per_vmm` is now `per_chip`. Needs p2-decode 0.6.1, p2-mapping 0.3.0.
 - **0.2.0** `watch` (closed captures, DAQ finalisation rules, `latest.json`),
   `live` (streaming rates over a sliding window, `live.json`, PNGs),
   `p2-monitor-reduce`, `reduce --calibration`. Needs p2-decode 0.4.0.

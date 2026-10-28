@@ -91,3 +91,104 @@ def merge_counts(list_of_counts) -> dict:
             elif k in total and total[k].shape == np.shape(v):
                 total[k] = total[k] + v
     return total
+
+
+# ---------------------------------------------------------------------------
+# per chip, and built chunk by chunk
+# ---------------------------------------------------------------------------
+#
+# A VMM id is 5 bits, so with several FECs (the full experiment: 180 hybrids,
+# 360 VMMs) the same id repeats. Chip-level histograms are indexed by
+# chip = fec * 32 + vmm (FEC id is 4 bits: 512 chips). They are uint64, so
+# summing captures over a long run cannot overflow. They live in
+# counts_chip.npz; counts.npz keeps the per-VMM layout above for the existing
+# QA readers (summed over FECs, exact for single-FEC data).
+
+NFEC = 16
+NCHIP = NFEC * NV
+CHUNK_ROWS = 5_000_000      # rows read per slice when re-reading a stored column
+
+
+def chip_index(fec, vmm):
+    return np.asarray(fec, dtype=np.int64) * NV + np.asarray(vmm, dtype=np.int64)
+
+
+def chip_occupancy(cols) -> np.ndarray:
+    """(NCHIP, 64) uint64 hits per (chip, channel): all a rate needs."""
+    idx = chip_index(cols["fec"], cols["vmm"]) * CH_BINS + np.asarray(cols["ch"], np.int64)
+    return np.bincount(idx, minlength=NCHIP * CH_BINS).reshape(NCHIP, CH_BINS).astype(np.uint64)
+
+
+def build_chip_counts(cols) -> dict:
+    """Chip-level histograms of one chunk: channel occupancy, ADC, over-threshold."""
+    chip = chip_index(cols["fec"], cols["vmm"])
+    adc = np.asarray(cols["adc"], np.int64)
+    ot = np.asarray(cols["over_threshold"]).astype(np.int64)
+    return {
+        "chip_ch": chip_occupancy(cols),
+        "chip_adc": np.bincount(chip * ADC_BINS + adc, minlength=NCHIP * ADC_BINS)
+                      .reshape(NCHIP, ADC_BINS).astype(np.uint64),
+        "chip_ot": np.bincount(chip * 2 + ot, minlength=NCHIP * 2)
+                     .reshape(NCHIP, 2).astype(np.uint64),
+    }
+
+
+def _add(total, part):
+    for k, v in part.items():
+        total[k] = v if k not in total else total[k] + v
+
+
+class CountsAccumulator:
+    """Histograms of a capture, filled one decode chunk at a time.
+
+    Memory is the histograms plus one chunk, whatever the capture size: pass
+    `add` as p2_decode.decode_to's on_chunk. Everything is additive except the
+    frame-counter profile, whose bins span the capture's frame range; that one
+    is filled afterwards from the stored columns (`finish`), also in slices.
+    The result equals build_counts / build_chip_counts on the whole capture.
+    """
+
+    def __init__(self):
+        self.legacy = {}
+        self.chip = {}
+        self.t_min = None
+        self.t_max = None
+
+    def add(self, cols):
+        part = build_counts(cols)
+        part.pop("time_profile")
+        tr = part.pop("time_range")
+        if len(cols["vmm"]):
+            self.t_min = int(tr[0]) if self.t_min is None else min(self.t_min, int(tr[0]))
+            self.t_max = int(tr[1]) if self.t_max is None else max(self.t_max, int(tr[1]))
+        _add(self.legacy, part)
+        _add(self.chip, build_chip_counts(cols))
+
+    def finish(self, store_dir):
+        """(legacy counts, chip counts); reads time.npy and vmm.npy in slices."""
+        import os
+        if not self.legacy:                  # no hits: shapes from an empty chunk
+            empty = {"fec": np.zeros(0, np.uint8), "vmm": np.zeros(0, np.uint8),
+                     "ch": np.zeros(0, np.uint8), "adc": np.zeros(0, np.uint16),
+                     "tdc": np.zeros(0, np.uint8), "bcid": np.zeros(0, np.uint16),
+                     "offset": np.zeros(0, np.int8), "over_threshold": np.zeros(0, bool),
+                     "time": np.zeros(0, np.uint32)}
+            return build_counts(empty), build_chip_counts(empty)
+        legacy = dict(self.legacy)
+        t0, t1 = self.t_min, self.t_max
+        span = max(t1 - t0, 1)
+        prof = np.zeros((NV, TIME_BINS), np.uint32)
+        tcol = np.load(os.path.join(store_dir, "time.npy"), mmap_mode="r")
+        vcol = np.load(os.path.join(store_dir, "vmm.npy"), mmap_mode="r")
+        for lo in range(0, len(tcol), CHUNK_ROWS):
+            t = np.asarray(tcol[lo:lo + CHUNK_ROWS], dtype=np.int64)
+            v = np.asarray(vcol[lo:lo + CHUNK_ROWS])
+            tb = np.clip(((t - t0) * TIME_BINS) // span, 0, TIME_BINS - 1)
+            prof += _per_vmm(v, tb, TIME_BINS)
+        legacy["time_profile"] = prof
+        legacy["time_range"] = np.array([t0, t1], dtype=np.int64)
+        # dtypes as build_counts gives them for one whole capture
+        for k, v in legacy.items():
+            if k not in ("hits_per_vmm", "time_range"):
+                legacy[k] = v.astype(np.uint32)
+        return legacy, dict(self.chip)

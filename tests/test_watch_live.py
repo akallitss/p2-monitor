@@ -114,7 +114,7 @@ def test_live_follows_growing_file_and_rotation(tmp_path):
     assert s["capture"] == _name(2)
     assert s["hits_total"] == 35 * 4 + 20 * 4
     r = s["rates"]
-    assert r["per_vmm"]["2"]["hits"] == 35 * 3 and r["per_vmm"]["3"]["hits"] == 20 * 3
+    assert r["per_chip"]["1:2"]["hits"] == 35 * 3 and r["per_chip"]["1:3"]["hits"] == 20 * 3
     assert r["per_detector"]["P2_MID"]["hits"] == 55
     on_disk = json.load(open(raw.parent / "live.json"))
     assert on_disk["hits_total"] == s["hits_total"]

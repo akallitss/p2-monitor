@@ -40,16 +40,16 @@ def test_process_capture_store(capture, tmp_path):
     assert v["per_fec"]["1"]["hits"] == 44
 
     r = scal["rates"]
-    assert r["per_vmm"]["2"]["rate_hz"] == pytest.approx(2200)
-    assert r["per_vmm"]["2"]["live_channels"] == 1
+    assert r["per_chip"]["1:2"]["rate_hz"] == pytest.approx(2200)
+    assert r["per_chip"]["1:2"]["live_channels"] == 1
     assert r["per_detector"]["P2_IN"]["rate_hz"] == pytest.approx(3300)
     assert r["per_detector"]["P2_IN"]["channels"] == 384
     assert r["per_detector"]["P2_MID"]["rate_hz"] == 0
     assert r["per_connector"]["P2_IN:c4"]["live_channels"] == 2
     assert r["per_half"]["P2_IN:c4:bot"]["hits"] == 22
     assert r["per_hybrid"]["1"]["hits"] == 33
-    assert r["uncabled"] == {"channels": 1, "hits": 11, "vmms": [0]}
-    assert r["hottest_channel"] == {"vmm": 2, "ch": 0, "rate_hz": 2200.0}
+    assert r["uncabled"] == {"channels": 1, "hits": 11, "chips": ["1:0"]}
+    assert r["hottest_channel"] == {"fec": 1, "vmm": 2, "ch": 0, "rate_hz": 2200.0}
     assert r["per_detector"]["P2_IN"]["rate_hz_per_cm2"] > 0
 
     # the trend keys the existing dashboard reads are still there
@@ -83,7 +83,7 @@ def test_no_mapping_mode(capture, tmp_path, monkeypatch):
         pmon.process_capture(capture, tmp_path / "a")
     scal = pmon.process_capture(capture, tmp_path / "b", mapping=False)
     assert scal["setup"] is None and "per_detector" not in scal["rates"]
-    assert scal["rates"]["per_vmm"]["0"]["hits"] == 11
+    assert scal["rates"]["per_chip"]["1:0"]["hits"] == 11
     assert not os.path.exists(tmp_path / "b" / "setup_resolved.json")
 
 
@@ -92,8 +92,10 @@ def test_merge_and_trend(capture, tmp_path):
         pmon.process_capture(capture, tmp_path / "run" / f"cap{i}", setup=LAB, when=WHEN)
     stores = pmon.find_stores(tmp_path / "run")
     assert len(stores) == 3
-    merged = pmon.merged_counts(stores)
-    assert int(merged["hits_per_vmm"][2]) == 66
+    merged = pmon.merged_counts(stores)                    # per chip: FEC 1, VMM 2
+    assert int(merged["chip_ch"][1 * 32 + 2].sum()) == 66
+    assert merged["chip_ch"].dtype == np.uint64
+    assert int(pmon.merged_counts(stores, chip=False)["hits_per_vmm"][2]) == 66
     t = pmon.trend_table(tmp_path / "run")
     assert t["rate_hz:P2_IN"].tolist() == pytest.approx([3300] * 3)
 

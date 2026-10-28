@@ -34,7 +34,8 @@ def test_same_counts_and_scalars(tmp_path):
     new_scal = pmon.process_capture(CAPTURE, tmp_path / "new", setup="lab_saclay_2026",
                                     when="2026-10-24", legacy_word_count=True)
 
-    a, b = pmon.load_counts(tmp_path / "old"), pmon.load_counts(tmp_path / "new")
+    a = pmon.load_counts(tmp_path / "old", chip=False)
+    b = pmon.load_counts(tmp_path / "new", chip=False)
     assert set(a) == set(b)
     for k in a:
         assert a[k].dtype == b[k].dtype and np.array_equal(a[k], b[k]), k

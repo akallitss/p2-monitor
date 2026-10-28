@@ -17,8 +17,13 @@ def is_store(path):
             and os.path.isfile(os.path.join(path, "scalars.json")))
 
 
-def load_counts(store):
-    with np.load(os.path.join(store, "counts.npz")) as z:
+def load_counts(store, chip=True):
+    """Chip-level counts (counts_chip.npz); chip=False, or a store from before
+    p2-monitor 0.3, gives the per-VMM counts.npz."""
+    name = "counts_chip.npz" if chip else "counts.npz"
+    if chip and not os.path.isfile(os.path.join(store, name)):
+        name = "counts.npz"
+    with np.load(os.path.join(store, name)) as z:
         return {k: z[k] for k in z.files}
 
 
@@ -62,16 +67,16 @@ def store_mapping(store):
     return m
 
 
-def merged_counts(stores):
-    return merge_counts(load_counts(s) for s in stores)
+def merged_counts(stores, chip=True):
+    return merge_counts(load_counts(s, chip) for s in stores)
 
 
 def trend_table(root):
     """One row per store under `root`, ordered by capture start.
 
     Columns: store, capture, capture_start, live_time_s, n_hits, hits_per_s,
-    mb_per_min_file, then rate_hz:<detector> and rate_hz:vmm<id> for each one
-    present.
+    mb_per_min_file, then rate_hz:<detector> and rate_hz:chip<fec:vmm> for
+    each one present.
     """
     root = os.fspath(root)
     rows = []
@@ -85,8 +90,8 @@ def trend_table(root):
                "mb_per_min_file": v.get("mb_per_min_file")}
         for det, d in (rt.get("per_detector") or {}).items():
             row[f"rate_hz:{det}"] = d["rate_hz"]
-        for vmm, d in (rt.get("per_vmm") or {}).items():
-            row[f"rate_hz:vmm{vmm}"] = d["rate_hz"]
+        for chip, d in (rt.get("per_chip") or {}).items():
+            row[f"rate_hz:chip{chip}"] = d["rate_hz"]
         rows.append(row)
     df = pd.DataFrame(rows)
     if len(df) and df["capture_start"].notna().any():
