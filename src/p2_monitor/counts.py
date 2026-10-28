@@ -178,8 +178,14 @@ class CountsAccumulator:
         t0, t1 = self.t_min, self.t_max
         span = max(t1 - t0, 1)
         prof = np.zeros((NV, TIME_BINS), np.uint32)
-        tcol = np.load(os.path.join(store_dir, "time.npy"), mmap_mode="r")
-        vcol = np.load(os.path.join(store_dir, "vmm.npy"), mmap_mode="r")
+        if t0 == t1:
+            # one frame-counter value (the ALINX firmware never changes it):
+            # every hit falls in bin 0, exactly as the general loop would put it
+            prof[:, 0] = legacy["hits_per_vmm"].astype(np.uint32)
+            tcol = ()
+        else:
+            tcol = np.load(os.path.join(store_dir, "time.npy"), mmap_mode="r")
+            vcol = np.load(os.path.join(store_dir, "vmm.npy"), mmap_mode="r")
         for lo in range(0, len(tcol), CHUNK_ROWS):
             t = np.asarray(tcol[lo:lo + CHUNK_ROWS], dtype=np.int64)
             v = np.asarray(vcol[lo:lo + CHUNK_ROWS])

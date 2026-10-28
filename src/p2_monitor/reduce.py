@@ -56,9 +56,12 @@ def process_capture(pcap, store_dir, setup=None, when=None, mapping=True,
         shutil.rmtree(partial, ignore_errors=True)
 
     acc = CountsAccumulator()
+    # without kept columns, store only what CountsAccumulator.finish re-reads:
+    # 5 of 32 bytes per hit instead of ~3.4x the capture written and deleted
     meta = p2_decode.decode_to(pcap, partial, data_format=data_format,
                                calibration=calibration, max_words=max_words,
-                               legacy_word_count=legacy_word_count, on_chunk=acc.add)
+                               legacy_word_count=legacy_word_count, on_chunk=acc.add,
+                               columns=None if keep_store else ["vmm", "time"])
     t_decode = time.time() - t0
 
     m = None

@@ -133,6 +133,8 @@ array and every scalar the old reduce writes to be identical.
 
 ## Versions
 
+- **0.3.1** with `--drop-columns` only `vmm` and `time` are written during the
+  reduce (needs p2-decode 0.7.0); measured on the lab box below.
 - **0.3.0** per-chip `(fec, vmm)` rates and `counts_chip.npz`; single-pass reduce
   with bounded memory (`--max-words`); exact detector ADC percentiles from
   histograms; `live` limits (`--max-read-mb`, `--max-behind-mb` skip-ahead,

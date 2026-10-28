@@ -119,3 +119,13 @@ def test_plots_when_no_detector_fired(tmp_path):
                        [srs_payload(0, 1, [hit_word(0, 44, 50, 4, 4)])] * 3, tsresol=3)
     pmon.process_capture(cap, tmp_path / "s", setup=LAB, when=WHEN)
     assert len(plot_store(tmp_path / "s", tmp_path / "png")) == 3
+
+
+def test_drop_columns_writes_little(capture, tmp_path):
+    scal = pmon.process_capture(capture, tmp_path / "s", setup=LAB, when=WHEN, keep_store=False)
+    assert not any(f.endswith(".npy") for f in os.listdir(tmp_path / "s"))
+    full = pmon.process_capture(capture, tmp_path / "f", setup=LAB, when=WHEN)
+    assert scal["rates"] == full["rates"]
+    a = pmon.load_counts(tmp_path / "s", chip=False)
+    b = pmon.load_counts(tmp_path / "f", chip=False)
+    assert all(np.array_equal(a[k], b[k]) for k in a)
