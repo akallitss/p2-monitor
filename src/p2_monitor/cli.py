@@ -128,6 +128,18 @@ def main(argv=None):
     p = sub.add_parser("trend", help="one row per store under a directory, as CSV")
     p.add_argument("root")
     p.add_argument("--csv", help="write here instead of printing")
+
+    p = sub.add_parser("qa", help="QA plots (ADC, BCID, TDC, time, ...) from a store's "
+                                  "histograms; several stores are merged")
+    p.add_argument("stores", nargs="+")
+    p.add_argument("--out-dir", required=True)
+    p.add_argument("--events-json", action="store_true",
+                   help="also write events.json (as vmm_pcapng_qa.py did)")
+    p.add_argument("--base", help="file name prefix (default: the first store's name)")
+    # accepted so p2-monitor-qa is a drop-in for vmm_pcapng_qa.py in qa_watcher;
+    # calibration only enters derived per-hit columns, which these plots do not use
+    p.add_argument("--format", help=argparse.SUPPRESS)
+    p.add_argument("--calibration", help=argparse.SUPPRESS)
     a = ap.parse_args(argv)
 
     if a.cmd == "reduce":
@@ -192,6 +204,18 @@ def main(argv=None):
         else:
             print(df.to_string(index=False))
         return 0
+    if a.cmd == "qa":
+        from .qa import render
+        paths = render(a.stores, a.out_dir, events_json=a.events_json, base=a.base)
+        print(f"{len(paths)} plots -> {a.out_dir}"
+              + (" (+ events.json)" if a.events_json else ""))
+        return 0
+
+
+def qa_main(argv=None):
+    """`p2-monitor-qa`: the qa command with vmm_pcapng_qa.py's calling convention
+    (store first, then --out-dir/--events-json/--format), for qa_watcher."""
+    return main(["qa"] + list(sys.argv[1:] if argv is None else argv))
 
 
 def reduce_main(argv=None):

@@ -133,6 +133,16 @@ array and every scalar the old reduce writes to be identical.
 
 ## Versions
 
+- **0.6.0** `p2-monitor qa <store>... --out-dir DIR [--events-json]` (and the
+  drop-in `p2-monitor-qa`): the per-capture QA plots drawn from histograms, with
+  vmm_pcapng_qa.py's file names and events.json: ADC, ADC by over-threshold,
+  ADC vs channel, OT fraction, channel occupancy, hits per chip, BCID, TDC,
+  frame offset, hit time in frame, and hits per second through the capture
+  (by packet time). Per chip (FEC:VMM); several stores are merged. The reduce
+  now fills the needed histograms (`chip_adc_ot1`, `chip_adc_vs_ch`,
+  `chip_bcid`, `chip_tdc`, `chip_offset`, `chip_ts`, `rate_s`) in
+  counts_chip.npz, so hit columns are no longer needed for plots. Older stores
+  must be re-reduced. Needs p2-decode 0.8.1.
 - **0.5.0** `live --udp HOST:PORT` reads the FEC's stream from the network,
   no file (p2-decode 0.8.0). dumpcap is unaffected: the kernel gives each
   datagram to both. Each poll reads at most `--max-read-mb`; the kernel drops

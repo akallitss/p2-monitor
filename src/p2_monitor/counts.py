@@ -80,16 +80,45 @@ def build_counts(cols) -> dict:
 
 
 def merge_counts(list_of_counts) -> dict:
-    """Sum counts across files. The whole point of storing counts."""
+    """Sum counts across files. The whole point of storing counts.
+
+    Chip histograms are summed as uint64 (per capture some are uint32); the
+    per-second rates are merged by second; time ranges take min and max.
+    """
+    def wide(v):
+        v = np.array(v)
+        return v.astype(np.uint64) if v.dtype == np.uint32 else v
+
     it = iter(list_of_counts)
-    total = {k: np.array(v) for k, v in next(it).items()}
+    first = next(it)
+    total = {k: (wide(v) if k.startswith("chip_") else np.array(v)) for k, v in first.items()}
+    by_sec = {}
+
+    def take_seconds(c):
+        if "rate_s_sec" in c:
+            for s, row in zip(np.asarray(c["rate_s_sec"]), np.asarray(c["rate_s"])):
+                s = int(s)
+                by_sec[s] = by_sec[s] + row.astype(np.uint64) if s in by_sec \
+                    else row.astype(np.uint64)
+    take_seconds(first)
     for c in it:
+        take_seconds(c)
         for k, v in c.items():
+            if k in ("rate_s_sec", "rate_s"):
+                continue
             if k == "time_range":
                 total[k] = np.array([min(total[k][0], v[0]),
                                      max(total[k][1], v[1])], dtype=np.int64)
+            elif k == "abs_time_range":
+                total[k] = np.array([np.nanmin([total[k][0], v[0]]),
+                                     np.nanmax([total[k][1], v[1]])])
             elif k in total and total[k].shape == np.shape(v):
-                total[k] = total[k] + v
+                total[k] = total[k] + (wide(v) if k.startswith("chip_") else v)
+    if "rate_s_sec" in total:
+        secs = np.array(sorted(by_sec), dtype=np.int64)
+        total["rate_s_sec"] = secs
+        total["rate_s"] = (np.stack([by_sec[s] for s in secs]) if len(secs)
+                           else np.zeros((0, NCHIP), np.uint64))
     return total
 
 
@@ -119,18 +148,85 @@ def chip_occupancy(cols) -> np.ndarray:
     return np.bincount(idx, minlength=NCHIP * CH_BINS).reshape(NCHIP, CH_BINS).astype(np.uint64)
 
 
+# Fine hit time within its frame, timestamp_ns = (offset*4096 + bcid)*22.5 ns
+# + TDC part: a fixed range, so the histogram is additive. offset -1 (the
+# earliest valid) to 15 covers [-92160, 1474560) ns.
+TS_BINS = 1024
+TS_LO, TS_HI = -4096 * 22.5, 16 * 4096 * 22.5
+
+
+def _chip_hist(chip, vals, nbins, dtype=np.uint32):
+    return (np.bincount(chip * nbins + vals, minlength=NCHIP * nbins)
+            .reshape(NCHIP, nbins).astype(dtype))
+
+
+def _timestamp_ns(cols):
+    """timestamp_ns of each hit, the p2_decode.derive formula without calibration."""
+    from p2_decode.schema import CLOCK_PERIOD_NS, TAC_SLOPE_NS, TDC_RANGE
+    coarse = (np.asarray(cols["offset"], np.float64) * 4096
+              + np.asarray(cols["bcid"], np.float64)) * CLOCK_PERIOD_NS
+    return coarse + CLOCK_PERIOD_NS - np.asarray(cols["tdc"], np.float64) * TAC_SLOPE_NS / TDC_RANGE
+
+
 def build_chip_counts(cols) -> dict:
-    """Chip-level histograms of one chunk: channel occupancy, ADC, over-threshold."""
+    """Chip-level histograms of one chunk: everything the QA plots need.
+
+    chip_ch, chip_adc, chip_ot are uint64; the larger ones (ADC vs channel,
+    BCID, ...) are uint32 per capture and become uint64 when merged.
+    """
     chip = chip_index(cols["fec"], cols["vmm"])
     adc = np.asarray(cols["adc"], np.int64)
     ot = np.asarray(cols["over_threshold"]).astype(np.int64)
+    ch = np.asarray(cols["ch"], np.int64)
+    ts = _timestamp_ns(cols)
+    ts_bin = np.clip(((ts - TS_LO) * TS_BINS / (TS_HI - TS_LO)).astype(np.int64), 0, TS_BINS - 1)
+    on = ot == 1
     return {
         "chip_ch": chip_occupancy(cols),
-        "chip_adc": np.bincount(chip * ADC_BINS + adc, minlength=NCHIP * ADC_BINS)
-                      .reshape(NCHIP, ADC_BINS).astype(np.uint64),
-        "chip_ot": np.bincount(chip * 2 + ot, minlength=NCHIP * 2)
-                     .reshape(NCHIP, 2).astype(np.uint64),
+        "chip_adc": _chip_hist(chip, adc, ADC_BINS, np.uint64),
+        "chip_ot": _chip_hist(chip, ot, 2, np.uint64),
+        "chip_adc_ot1": _chip_hist(chip[on], adc[on], ADC_BINS),
+        "chip_adc_vs_ch": (np.bincount((chip * CH_BINS + ch) * ADC_CH_ADC_BINS + (adc >> 3),
+                                       minlength=NCHIP * CH_BINS * ADC_CH_ADC_BINS)
+                           .reshape(NCHIP, CH_BINS, ADC_CH_ADC_BINS).astype(np.uint32)),
+        "chip_bcid": _chip_hist(chip, np.asarray(cols["bcid"], np.int64), BCID_BINS),
+        "chip_tdc": _chip_hist(chip, np.asarray(cols["tdc"], np.int64), TDC_BINS),
+        "chip_offset": _chip_hist(chip, np.asarray(cols["offset"], np.int64) + 16, OFFSET_BINS),
+        "chip_ts": _chip_hist(chip, ts_bin, TS_BINS),
     }
+
+
+def per_second(cols):
+    """{second: (NCHIP,) hits} by the wall-clock second their packet arrived.
+
+    Uses p2_decode's pkt_time_ns (capture/receive time, p2-decode >= 0.8.1):
+    the FEC's SRS clock is not a usable wall clock (on the lab data it jumps).
+    Without packet times (e.g. a column store read back) it falls back to the
+    SRS marker + fine time. Sparse (only the seconds that occur) and additive
+    across chunks. Also returns the (min, max) of the hits' SRS absolute time,
+    which events.json reports as t_first_ns / t_last_ns as before.
+    """
+    abs_ns = np.asarray(cols["srs_timestamp"], np.float64) * 25.0 + _timestamp_ns(cols)
+    t = np.asarray(cols["pkt_time_ns"], np.float64) if "pkt_time_ns" in cols else abs_ns
+    ok = np.isfinite(t)
+    sec = np.floor(t[ok] / 1e9).astype(np.int64)
+    chip = chip_index(cols["fec"], cols["vmm"])[ok]
+    key, n = np.unique(sec * NCHIP + chip, return_counts=True)
+    out = {}
+    for s in np.unique(key // NCHIP):
+        sel = (key // NCHIP) == s
+        row = np.zeros(NCHIP, np.uint32)
+        row[key[sel] % NCHIP] = n[sel]
+        out[int(s)] = row
+    return out, (float(abs_ns.min()), float(abs_ns.max())) if len(abs_ns) else None
+
+
+def seconds_arrays(by_second):
+    """{second: row} -> (rate_s_sec (n,), rate_s (n, NCHIP)) sorted by second."""
+    secs = np.array(sorted(by_second), dtype=np.int64)
+    rows = (np.stack([by_second[s] for s in secs]) if len(secs)
+            else np.zeros((0, NCHIP), np.uint32))
+    return secs, rows
 
 
 def _add(total, part):
@@ -153,6 +249,8 @@ class CountsAccumulator:
         self.chip = {}
         self.t_min = None
         self.t_max = None
+        self.by_second = {}
+        self.abs_range = None
 
     def add(self, cols):
         part = build_counts(cols)
@@ -163,6 +261,12 @@ class CountsAccumulator:
             self.t_max = int(tr[1]) if self.t_max is None else max(self.t_max, int(tr[1]))
         _add(self.legacy, part)
         _add(self.chip, build_chip_counts(cols))
+        rows, rng = per_second(cols)
+        for s, r in rows.items():
+            self.by_second[s] = self.by_second[s] + r if s in self.by_second else r
+        if rng is not None:
+            self.abs_range = rng if self.abs_range is None else \
+                (min(self.abs_range[0], rng[0]), max(self.abs_range[1], rng[1]))
 
     def finish(self, store_dir):
         """(legacy counts, chip counts); reads time.npy and vmm.npy in slices."""
@@ -172,8 +276,11 @@ class CountsAccumulator:
                      "ch": np.zeros(0, np.uint8), "adc": np.zeros(0, np.uint16),
                      "tdc": np.zeros(0, np.uint8), "bcid": np.zeros(0, np.uint16),
                      "offset": np.zeros(0, np.int8), "over_threshold": np.zeros(0, bool),
-                     "time": np.zeros(0, np.uint32)}
-            return build_counts(empty), build_chip_counts(empty)
+                     "time": np.zeros(0, np.uint32), "srs_timestamp": np.zeros(0, np.uint64)}
+            chip = build_chip_counts(empty)
+            chip["rate_s_sec"], chip["rate_s"] = seconds_arrays({})
+            chip["abs_time_range"] = np.array([np.nan, np.nan])
+            return build_counts(empty), chip
         legacy = dict(self.legacy)
         t0, t1 = self.t_min, self.t_max
         span = max(t1 - t0, 1)
@@ -197,4 +304,7 @@ class CountsAccumulator:
         for k, v in legacy.items():
             if k not in ("hits_per_vmm", "time_range"):
                 legacy[k] = v.astype(np.uint32)
-        return legacy, dict(self.chip)
+        chip = dict(self.chip)
+        chip["rate_s_sec"], chip["rate_s"] = seconds_arrays(self.by_second)
+        chip["abs_time_range"] = np.array(self.abs_range if self.abs_range else [np.nan] * 2)
+        return legacy, chip
