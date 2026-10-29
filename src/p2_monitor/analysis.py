@@ -202,7 +202,7 @@ def analyze_stores(stores, out_dir, title=""):
         raise FileNotFoundError("no store to analyse")
     os.makedirs(out_dir, exist_ok=True)
     scal = [load_scalars(s) for s in stores]
-    counts = merge_counts([load_counts(s) for s in stores])
+    counts = merge_counts(load_counts(s) for s in stores)    # one store at a time
     if "chip_adc_vs_ch" not in counts:
         raise ValueError(f"{stores[0]}: store made before p2-monitor 0.6; re-reduce it")
     live = _live(scal)

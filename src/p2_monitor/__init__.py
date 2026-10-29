@@ -8,7 +8,7 @@ volume, and the per-capture trend record.
     scal = process_capture("cap.pcapng", "stores/cap", setup="lab_saclay_2026")
 """
 
-__version__ = "0.7.0"
+__version__ = "0.7.1"
 
 from .counts import (CountsAccumulator, build_chip_counts,           # noqa: E402
                      build_counts, chip_occupancy, merge_counts)

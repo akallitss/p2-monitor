@@ -133,6 +133,8 @@ array and every scalar the old reduce writes to be identical.
 
 ## Versions
 
+- **0.7.1** analyze and qa merge stores one at a time: peak memory ~flat with the
+  number of captures (1 store 298 MB, 30 stores 353 MB).
 - **0.7.0** `p2-monitor analyze <run> --out-dir DIR`: the detector view of a run,
   per sub-run and for the whole run, from the stored histograms only (common to
   every campaign): rate on the detector surface, per-channel rates, rates per

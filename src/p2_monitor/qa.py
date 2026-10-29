@@ -109,8 +109,8 @@ class _Figs:
 
 def _load(stores):
     from .counts import merge_counts
-    chip = merge_counts([load_counts(s) for s in stores])
-    legacy = merge_counts([load_counts(s, chip=False) for s in stores])
+    chip = merge_counts(load_counts(s) for s in stores)       # one store at a time
+    legacy = merge_counts(load_counts(s, chip=False) for s in stores)
     scal = [load_scalars(s) for s in stores]
     meta = []
     for s in stores:
