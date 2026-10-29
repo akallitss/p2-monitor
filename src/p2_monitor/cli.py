@@ -129,6 +129,14 @@ def main(argv=None):
     p.add_argument("root")
     p.add_argument("--csv", help="write here instead of printing")
 
+    p = sub.add_parser("analyze", help="detector view of a run (each sub-run and the whole "
+                                       "run): surface rate map, per-VMM rates and ADC, "
+                                       "amplitude, rate vs time, sub-run trend")
+    p.add_argument("run_dir", help="a run directory (runs/run_N)")
+    p.add_argument("--out-dir", required=True)
+    p.add_argument("--store-inner", default="hits_store")
+    p.add_argument("--subrun", help="only this sub-run (no run-level output)")
+
     p = sub.add_parser("qa", help="QA plots (ADC, BCID, TDC, time, ...) from a store's "
                                   "histograms; several stores are merged")
     p.add_argument("stores", nargs="+")
@@ -203,6 +211,14 @@ def main(argv=None):
             print(f"{len(df)} stores -> {a.csv}")
         else:
             print(df.to_string(index=False))
+        return 0
+    if a.cmd == "analyze":
+        from .analysis import analyze_run
+        done = analyze_run(a.run_dir, a.out_dir, store_inner=a.store_inner, subrun=a.subrun)
+        if not done:
+            raise SystemExit(f"no store under {a.run_dir}/*/{a.store_inner}")
+        for name, paths in done.items():
+            print(f"{name}: {len(paths)} plots")
         return 0
     if a.cmd == "qa":
         from .qa import render

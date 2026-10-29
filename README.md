@@ -133,6 +133,14 @@ array and every scalar the old reduce writes to be identical.
 
 ## Versions
 
+- **0.7.0** `p2-monitor analyze <run> --out-dir DIR`: the detector view of a run,
+  per sub-run and for the whole run, from the stored histograms only (common to
+  every campaign): rate on the detector surface, per-channel rates, rates per
+  level, per-VMM ADC per channel (map + mean), amplitude per detector and
+  connector half, rate vs time per detector, sub-run trend of rate and mean ADC,
+  and summary.json (hits, rate, Hz/cm2, live/dead/noisy channels, mean ADC).
+  Stores are redrawn with the setup FILE they were reduced with (setup_file in
+  setup_resolved.json), not whatever the bare name resolves to now.
 - **0.6.1** QA ADC axis range from the widest single chip, not the sum (a hot
   chip's pedestal cut the other chips' tails).
 - **0.6.0** `p2-monitor qa <store>... --out-dir DIR [--events-json]` (and the

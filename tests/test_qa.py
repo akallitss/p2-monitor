@@ -51,3 +51,34 @@ def test_merges_stores(capture, tmp_path):
     render([tmp_path / "a", tmp_path / "b"], tmp_path / "qa", events_json=True)
     hits, _ = p2_decode.decode(capture)
     assert json.load(open(tmp_path / "qa" / "events.json"))["n_hits"] == 2 * len(hits)
+
+
+def test_store_mapping_uses_the_recorded_file(capture, tmp_path):
+    """A store reduced with a local copy of the setup is redrawn from that copy."""
+    import shutil
+    from importlib import resources
+    from p2_monitor.store import store_mapping
+    local = tmp_path / "setups" / "lab_saclay_2026.yaml"
+    local.parent.mkdir()
+    shutil.copy(resources.files("p2_mapping") / "data" / "setups" / "lab_saclay_2026.yaml", local)
+    pmon.process_capture(capture, tmp_path / "s", setup=str(local), when=WHEN, keep_store=False)
+    assert store_mapping(str(tmp_path / "s")).setup.path == str(local)
+
+
+def test_detector_view(capture, tmp_path):
+    from p2_monitor.analysis import analyze_run
+    run = tmp_path / "run_7"
+    for sub in ("cosmics_00", "cosmics_01"):
+        pmon.process_capture(capture, run / sub / "hits_store" / "cap1", setup=LAB, when=WHEN,
+                             keep_store=False)
+    done = analyze_run(run, tmp_path / "out")
+    assert set(done) == {"cosmics_00", "cosmics_01", "_run"}
+    names = {os.path.basename(p) for p in done["_run"]}
+    assert {"rate_map.png", "channel_rates.png", "level_rates.png", "vmm_adc.png",
+            "amplitude.png", "time.png", "trend.png"} <= names
+    s = json.load(open(tmp_path / "out" / "_run" / "summary.json"))
+    one = json.load(open(tmp_path / "out" / "cosmics_00" / "summary.json"))
+    hits, _ = p2_decode.decode(capture)
+    assert one["hits"] == len(hits) and s["hits"] == 2 * len(hits)
+    assert s["detectors"] and all(d["live_channels"] + d["dead_channels"] == d["channels"]
+                                  for d in s["detectors"].values())

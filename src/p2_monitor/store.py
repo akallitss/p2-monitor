@@ -58,7 +58,12 @@ def store_mapping(store):
     for k, o in (opt.get("orders") or {}).items():
         det, conn, half = k.split(":")
         orders[(det, int(conn.lstrip("c")), half)] = o
-    m = p2_mapping.load_mapping(r["setup"], r["when"], order=opt.get("order"),
+    # the file the store was reduced with (e.g. the DAQ box's own, editable copy
+    # in /local/p2/p2-setups), not whatever copy the bare name resolves to now;
+    # its dated entries give the stand at r["when"] even after later edits
+    src = r.get("setup_file") if r.get("setup_file") and os.path.isfile(r["setup_file"]) \
+        else r["setup"]
+    m = p2_mapping.load_mapping(src, r["when"], order=opt.get("order"),
                                 orders=orders, bottom_half=opt.get("bottom_half"))
     if m.setup.sha256 != r.get("setup_sha256"):
         import warnings
