@@ -46,6 +46,26 @@ from .watch import captures, raw_dirs
 
 MB = 1024 * 1024
 MAX_BUCKETS = 60
+RECENT_S = 5.0          # "now": the electronics view's short window, for plugging cables
+
+
+def _owners(mapping):
+    """{(fec or -1, vmm): 'P2_IN c3 bot'} from a mapping's table (chip -> where)."""
+    if mapping is None:
+        return {}
+    t = mapping.table
+    out = {}
+    for (fec, vmm), g in t.groupby(["fec", "vmm"]):
+        r = g.iloc[0]
+        out[(int(fec), int(vmm))] = f"{r['detector']} c{int(r['connector_N'])} {r['half']}"
+    return out
+
+
+def _hz(counts, live, frac):
+    """Rates per channel, 3 significant digits, scaled to the full stream."""
+    if not live or live <= 0:
+        return None
+    return [float(f"{v:.3g}") for v in np.asarray(counts, np.float64) / (live * frac)]
 
 
 def own_rss_mb():
@@ -118,6 +138,7 @@ class LiveMonitor:
         self.memory_events = 0
         self.mapping_error = None
         self._mapping_tried = False
+        self._owners, self._owners_for = {}, None    # chip -> where, for this mapping
 
     # -- following ------------------------------------------------------------
 
@@ -348,7 +369,37 @@ class LiveMonitor:
             s["volume"] = {"hits_per_s": round(hits / eff, 6),
                            "mb_per_min_udp": round(nbytes / 1e6 / eff * 60, 6)}
             s["rates"] = summarize(channel_rates(counts, eff, self.mapping))
+            s["electronics"] = self.electronics(frac)
         return s
+
+    def electronics(self, frac=1.0):
+        """Every chip that fired, channel by channel, mapped or not.
+
+        For fast testing (which channel does this cable land on?): per chip
+        "fec:vmm", the rate of each of its 64 channels over the whole window
+        and over the last RECENT_S seconds of data, and where the setup puts
+        the chip (None = not in the setup). Like a live packet view, decoded.
+        """
+        if not self.records:
+            return None
+        newest = max(r[1] for r in self.records)
+        occ_w = np.sum([r[2] for r in self.records], axis=0)
+        live_w = (newest - min(r[0] for r in self.records)) / 1e9
+        rec = [r for r in self.records if r[1] >= newest - RECENT_S * 1e9]
+        occ_r = np.sum([r[2] for r in rec], axis=0)
+        live_r = (newest - min(r[0] for r in rec)) / 1e9
+        if live_r < 1.0:                     # one short poll: too little time for a rate
+            occ_r, live_r = occ_w, live_w
+        if self._owners_for is not self.mapping:
+            self._owners, self._owners_for = _owners(self.mapping), self.mapping
+        chips = {}
+        for c in np.flatnonzero(occ_w.sum(axis=1)):
+            fec, vmm = divmod(int(c), 32)
+            where = self._owners.get((fec, vmm)) or self._owners.get((-1, vmm))
+            chips[f"{fec}:{vmm}"] = {"where": where, "hits": int(occ_w[c].sum()),
+                                     "window_hz": _hz(occ_w[c], live_w, frac),
+                                     "recent_hz": _hz(occ_r[c], live_r, frac)}
+        return {"window_s": round(live_w, 3), "recent_s": round(live_r, 3), "chips": chips}
 
     def _maybe_plot(self, summary):
         if not (self.plot_dir and self.plot_every_s) or not self.records:

@@ -219,6 +219,25 @@ def _send(port, payloads):
     tx.close()
 
 
+def test_electronics_view(tmp_path):
+    """Every chip that fired, per channel, mapped or not; 'recent' = last seconds."""
+    lm = LiveMonitor(udp="127.0.0.1:1", setup=LAB, when=WHEN, window_s=3600)
+    lm.mapping = lm._mapping_for(0)
+    old = np.zeros((512, 64), np.uint64)
+    new = np.zeros((512, 64), np.uint64)
+    old[1 * 32 + 1, 7] = 120          # FEC 1 VMM 1 (H0: not in the setup), early
+    new[1 * 32 + 1, 9] = 40           # ... a cable plugged later lands on ch 9
+    old[1 * 32 + 2, 0] = 60           # FEC 1 VMM 2: P2_IN in the setup
+    lm.records = [[0.0, 10e9, old, 180, 0, 10, 0], [56e9, 60e9, new, 40, 0, 4, 0]]
+    e = lm.summary()["electronics"]
+    v1, v2 = e["chips"]["1:1"], e["chips"]["1:2"]
+    assert v1["where"] is None and v2["where"].startswith("P2_IN c4 ")
+    assert e["window_s"] == 60.0 and e["recent_s"] == 4.0
+    assert v1["window_hz"][7] == 2.0 and v1["window_hz"][9] == pytest.approx(0.667)
+    assert v1["recent_hz"][7] == 0.0 and v1["recent_hz"][9] == 10.0
+    assert v1["hits"] == 160 and len(v1["window_hz"]) == 64
+
+
 def test_live_udp_matches_file(tmp_path):
     words = [marker_word(2, 7), hit_word(2, 0, 1, 1, 1), hit_word(2, 1, 1, 1, 1),
              hit_word(2, 2, 1, 1, 1), hit_word(8, 3, 1, 1, 1)]

@@ -133,6 +133,10 @@ array and every scalar the old reduce writes to be identical.
 
 ## Versions
 
+- **0.8.0** live.json `electronics`: every chip that fired (`"fec:vmm"`), mapped
+  or not, with the rate of each of its 64 channels over the window and over the
+  last 5 s of data (`recent_hz`), and where the setup puts it (`where`, None =
+  not in the setup). For fast testing: which channel does this cable land on?
 - **0.7.1** analyze and qa merge stores one at a time: peak memory ~flat with the
   number of captures (1 store 298 MB, 30 stores 353 MB).
 - **0.7.0** `p2-monitor analyze <run> --out-dir DIR`: the detector view of a run,
