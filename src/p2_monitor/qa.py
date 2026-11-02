@@ -19,7 +19,7 @@ import os
 
 import numpy as np
 
-from .counts import (ADC_BINS, ADC_CH_ADC_BINS, BCID_BINS, NV, OFFSET_BINS,
+from .counts import (ADC_BINS, ADC_CH_ADC_BINS, NV, OFFSET_BINS,
                      TDC_BINS, TS_BINS, TS_HI, TS_LO)
 from .plots import BAR, GRID, INK, INK_2, _mpl
 from .store import load_counts, load_scalars

@@ -26,7 +26,7 @@ import os
 import numpy as np
 
 from .counts import ADC_CH_ADC_BINS, NV, merge_counts
-from .plots import BAR, GRID, INK, INK_2, SEQ, _mpl, plot_counts, si
+from .plots import GRID, INK, INK_2, _mpl, plot_counts
 from .rates import channel_rates
 from .store import find_stores, load_counts, load_scalars, store_mapping
 
